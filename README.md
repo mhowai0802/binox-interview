@@ -129,7 +129,9 @@ binox-interview/
 │       ├── us_ai_policy.txt           # US AI regulatory landscape
 │       └── ai_startup_impact.txt      # Impact on tech startups
 └── examples/
-    └── demo_output.md                 # Sample workflow output
+    ├── demo_output.md                 # Sample workflow output
+    ├── test_results.md                # 10-query test suite results
+    └── recordings/                    # Screen recordings of each test (local only)
 ```
 
 ## Workflow Nodes
@@ -163,6 +165,36 @@ binox-interview/
 
 See [`examples/demo_output.md`](examples/demo_output.md) for sample output.
 
+### Screen Recordings
+
+**Test 1 — "Compare AI regulation in the EU vs US. How might it affect tech startups?"**
+All 3 KB documents retrieved (EU AI Act, US policy, startup impact). Full decomposition + synthesis with citations.
+
+![Test 1: AI regulation comparison](examples/recordings/test_01.gif)
+
+**Test 4 — "Explain the biochemistry of photosynthesis and its role in the carbon cycle."**
+0 KB documents retrieved (score threshold filters out irrelevant AI regulation docs). Agent falls back to LLM-only research.
+
+![Test 4: Off-topic query, no KB match](examples/recordings/test_04.gif)
+
+**Test 10 — "Should a Hong Kong-based AI startup expand to the EU or US market first?"**
+3 KB documents retrieved. Agent synthesises a decision-oriented recommendation with cited evidence.
+
+![Test 10: Decision-oriented synthesis](examples/recordings/test_10.gif)
+
+### Test Suite (10 Queries)
+
+All 10 test queries passed (10/10). The suite covers diverse scenarios:
+
+| Query Type | KB Docs Retrieved | Tests |
+|---|---|---|
+| AI regulation (matches KB) | 3 | Decomposition, citation, hybrid retrieval |
+| Unrelated topics (no KB match) | 0 | Score threshold, graceful fallback to LLM-only |
+| Partially related | 2 | Hybrid value (LLM fills KB gaps) |
+| Max complexity (5+ sub-questions) | 2 | Budget limits, constraint enforcement |
+
+See [`examples/test_results.md`](examples/test_results.md) for full results with actual outputs.
+
 ## Self-Assessment
 
 ### Strengths
@@ -172,6 +204,7 @@ See [`examples/demo_output.md`](examples/demo_output.md) for sample output.
 - **Clear decomposition**: the workflow structure mirrors the conceptual architecture exactly.
 - **Reproducible**: the entire agent is captured in a single version-controlled YAML file with sample documents.
 - **Appropriate tool selection**: Dify was recommended in the brief; this implementation uses it fully, including its native Knowledge Base for vector retrieval.
+- **Clear business value**: at ~$0.01 per research session (~200x faster, ~1,000x cheaper than manual analyst work), the agent demonstrates tangible ROI for consulting, compliance, and due diligence use cases. See `evaluation.md` Section 8 for the full cost-benefit analysis.
 
 ### Limitations
 - Token counting uses character-based approximation (`chars / 4`) since the Dify sandbox lacks `tiktoken`. See `evaluation.md` for analysis.

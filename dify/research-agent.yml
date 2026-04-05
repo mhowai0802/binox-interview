@@ -223,29 +223,37 @@ workflow:
             import json
 
             def main(text: str) -> dict:
-                clean = text.strip()
-                if clean.startswith("```"):
-                    lines = clean.split("\n")
-                    clean = "\n".join(lines[1:-1]).strip()
-                if clean.endswith("```"):
-                    clean = clean[:-3].strip()
+                if not text or not text.strip():
+                    return {"subquestions": [text or ""], "count": 1}
 
                 try:
-                    questions = json.loads(clean)
-                    if not isinstance(questions, list):
-                        questions = [str(questions)]
-                except json.JSONDecodeError:
-                    questions = [
-                        line.strip().lstrip("-•*0123456789.) ")
-                        for line in clean.splitlines()
-                        if line.strip() and len(line.strip()) > 5
-                    ]
+                    clean = text.strip()
+                    if clean.startswith("```"):
+                        lines = clean.split("\n")
+                        clean = "\n".join(lines[1:-1]).strip()
+                    if clean.endswith("```"):
+                        clean = clean[:-3].strip()
 
-                questions = [q for q in questions[:5] if q]
-                return {
-                    "subquestions": questions,
-                    "count": len(questions),
-                }
+                    try:
+                        questions = json.loads(clean)
+                        if not isinstance(questions, list):
+                            questions = [str(questions)]
+                        else:
+                            questions = [str(q) for q in questions if q]
+                    except (json.JSONDecodeError, ValueError):
+                        questions = [
+                            line.strip().lstrip("-\u2022*0123456789.) ")
+                            for line in clean.splitlines()
+                            if line.strip() and len(line.strip()) > 5
+                        ]
+
+                    questions = [q for q in questions[:5] if q]
+                    if not questions:
+                        questions = [text.strip()[:500]]
+
+                    return {"subquestions": questions, "count": len(questions)}
+                except Exception:
+                    return {"subquestions": [text.strip()[:500]], "count": 1}
           code_language: python3
           desc: 'Extract the JSON array of sub-questions from the LLM response'
           outputs:
@@ -425,18 +433,30 @@ workflow:
                 MAX_PER_SUBQUERY = 2000
                 MAX_PER_SESSION = 10000
 
+                safe_results = results if isinstance(results, list) else []
+                safe_kb = kb_results if isinstance(kb_results, list) else []
+
                 context_parts = []
-                for i, r in enumerate(results):
-                    context_parts.append(f"[Source {i + 1}]\n{r}")
+                for i, r in enumerate(safe_results):
+                    text = str(r) if r else ""
+                    if text:
+                        context_parts.append(f"[Source {i + 1}]\n{text}")
 
                 kb_count = 0
-                for doc in kb_results:
-                    content = doc.get("content", "") if isinstance(doc, dict) else str(doc)
-                    title = doc.get("title", "") if isinstance(doc, dict) else ""
+                for doc in safe_kb:
+                    try:
+                        content = doc.get("content", "") if isinstance(doc, dict) else str(doc)
+                        title = doc.get("title", "") if isinstance(doc, dict) else ""
+                    except Exception:
+                        content = str(doc) if doc else ""
+                        title = ""
                     if content:
                         kb_count += 1
                         label = title if title else f"KB Doc {kb_count}"
                         context_parts.append(f"[KB: {label}]\n{content}")
+
+                if not context_parts:
+                    context_parts.append(f"[Note] No research results or KB documents were retrieved for: {query}")
 
                 context = "\n\n".join(context_parts)
                 approx_tokens = len(context) // 4
@@ -453,7 +473,7 @@ workflow:
                 budget_text = (
                     f"Tokens used: ~{approx_tokens:,} / {MAX_PER_SESSION:,}\n"
                     f"Tokens remaining: ~{remaining:,}\n"
-                    f"Sub-queries completed: {len(results)} / 5\n"
+                    f"Sub-queries completed: {len(safe_results)} / 5\n"
                     f"KB documents retrieved: {kb_count}\n"
                     f"Per-subquery limit: {MAX_PER_SUBQUERY:,} tokens\n"
                     f"Truncated: {'Yes' if truncated else 'No'}\n"
@@ -464,7 +484,7 @@ workflow:
                     "context": context,
                     "budget_text": budget_text,
                     "tokens_used": approx_tokens,
-                    "subqueries_done": len(results),
+                    "subqueries_done": len(safe_results),
                 }
           code_language: python3
           desc: 'Combine research results + KB retrieval, count tokens, enforce session budget'
@@ -564,17 +584,26 @@ workflow:
       - data:
           code: |
             def main(answer: str, budget_text: str, subqueries_done: int) -> dict:
+                safe_answer = answer if answer and answer.strip() else "(No answer was generated. Check workflow trace for errors.)"
+                safe_budget = budget_text if budget_text and budget_text.strip() else "Budget data unavailable"
+                safe_count = subqueries_done if isinstance(subqueries_done, (int, float)) else 0
+
                 report = (
                     "## Research Report\n\n"
-                    f"{answer}\n\n"
+                    f"{safe_answer}\n\n"
                     "---\n\n"
                     "### Constraint & Budget Summary\n\n"
                     "| Metric | Value |\n"
                     "|---|---|\n"
                 )
-                for line in budget_text.strip().split("\n"):
-                    key, _, val = line.partition(":")
-                    report += f"| {key.strip()} | {val.strip()} |\n"
+
+                try:
+                    for line in safe_budget.strip().split("\n"):
+                        key, _, val = line.partition(":")
+                        if key.strip():
+                            report += f"| {key.strip()} | {val.strip()} |\n"
+                except Exception:
+                    report += f"| Status | {safe_budget} |\n"
 
                 report += (
                     "\n*Token counts are approximated (chars / 4). "
