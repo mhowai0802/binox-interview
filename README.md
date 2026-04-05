@@ -67,7 +67,7 @@ All constraints are visible and editable directly in the Dify workflow editor.
 ### Prerequisites
 
 - Docker & Docker Compose (for Dify)
-- An LLM API key
+- An LLM API key + an embedding model configured in Dify
 
 ### 1. Start Dify
 
@@ -78,29 +78,33 @@ cp .env.example .env
 docker compose up -d
 ```
 
-### 2. Add a model provider
+### 2. Add model providers
 
-In Dify Settings, add your LLM (OpenAI, HKBU GenAI API, etc.).
+In Dify Settings → Model Providers, add:
+- An **LLM** (OpenAI, HKBU GenAI API, etc.)
+- An **embedding model** (e.g. OpenAI `text-embedding-3-small`)
+
 See [`dify/SETUP_GUIDE.md`](dify/SETUP_GUIDE.md) for detailed steps.
 
-### 3. Create a Knowledge Base
+### 3. Run automated setup
 
-1. Go to **Knowledge** → **Create Knowledge** → name it `AI Regulation Research`
-2. Upload the 3 sample documents from [`dify/sample_knowledge/`](dify/sample_knowledge/)
-3. Wait for indexing to complete
+```bash
+./setup.sh              # uses http://localhost by default
+./setup.sh http://my-dify:8080  # or specify a custom Dify URL
+```
 
-### 4. Import the workflow
+The script logs in, creates a Knowledge Base, uploads sample documents, waits for indexing, and imports the workflow — all automatically.
 
-Go to **Studio** → **Create from DSL** → upload [`dify/research-agent.yml`](dify/research-agent.yml).
+<details>
+<summary>Manual setup (if you prefer)</summary>
 
-### 5. Configure the KB Retrieval node
+See [`dify/SETUP_GUIDE.md`](dify/SETUP_GUIDE.md) for step-by-step manual instructions.
 
-Open the **Knowledge Base Retrieval** node in the workflow editor and select your Knowledge Base.
-See [`dify/SETUP_GUIDE.md`](dify/SETUP_GUIDE.md) Step 5 for detailed instructions.
+</details>
 
-### 6. Test
+### 4. Test
 
-Open the workflow → **Debug & Preview** → enter a query:
+Open the workflow URL printed by the setup script → **Debug & Preview** → enter a query:
 
 > Compare the economic impact of AI regulation in the EU vs the US. What are the key differences, and how might they affect tech startups?
 
@@ -110,6 +114,7 @@ Open the workflow → **Debug & Preview** → enter a query:
 binox-interview/
 ├── README.md                          # This file
 ├── evaluation.md                      # Architecture trade-off analysis
+├── setup.sh                           # Automated setup script
 ├── .gitignore
 ├── dify/
 │   ├── research-agent.yml             # Dify workflow DSL (import into Dify)
