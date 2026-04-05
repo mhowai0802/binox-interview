@@ -1,140 +1,99 @@
 # Evaluation: Architecture Trade-Offs
 
-## 1. Memory Strategy: Why Summarisation Cascade?
+## 1. Why Pure Dify (vs. Python Hybrid)?
 
-Three memory strategies were considered:
+Two architectures were considered:
 
-| Strategy | Description | Pros | Cons |
+| Approach | Description | Pros | Cons |
 |---|---|---|---|
-| **Pure RAG** | Store raw documents, retrieve by similarity | Simple; no information loss at storage time | Context window fills quickly; retrieval noise on large corpora |
-| **Sliding Window** | Keep only the last N tokens of conversation | Easy to implement; constant memory | Loses early research; poor for multi-part questions |
-| **Summarisation Cascade** *(chosen)* | Summarise each chunk at ingestion, store summaries in vector DB | Bounded memory per chunk; retains the *gist* of all research | Summarisation can lose nuance; adds LLM cost |
+| **Python hybrid** | FastAPI memory service + Dify for orchestration | Full control; precise token counting with tiktoken; unit-testable | Two services to run; DSL format fragility; higher setup friction |
+| **Pure Dify** *(chosen)* | All logic inside a single Dify workflow | One-file import; zero external dependencies; visual and editable | Limited to Dify node types; approximate token counting; no persistent vector store |
 
-### Why Summarisation Cascade wins for this task
+### Why Pure Dify wins for this task
 
-The G3 brief explicitly requires operating under memory constraints. A pure RAG approach would either exceed the context window or require aggressive top-k filtering that risks dropping relevant results. A sliding window discards early sub-question answers, which defeats the purpose of decomposition.
+The brief says *"Use tools like n8n/Dify for orchestration"* and the evaluation weights Documentation & Reproducibility at 25%. A self-contained Dify workflow maximises reproducibility: the reviewer imports one YAML file and has a working prototype in under 2 minutes.
 
-The summarisation cascade gives a **middle ground**: every sub-question's answer is compressed to a fixed token budget *before* storage, guaranteeing that the total stored context stays bounded. At synthesis time, vector similarity selects the most relevant summaries — so the final LLM call receives a curated, budget-compliant context window.
+The Python hybrid approach required running a FastAPI server alongside Dify, managing ChromaDB persistence, and debugging DSL format mismatches between Dify versions. The added complexity provided precise token counting and vector retrieval, but those benefits are marginal for a prototype.
 
-**Trade-off acknowledged**: summarisation is lossy. If a sub-question's answer contains a critical number buried in a long paragraph, the summary might omit it. Mitigation: the summarisation prompt instructs the LLM to "preserve all key facts, figures, and citations."
+**Trade-off acknowledged**: by moving to pure Dify, we lose exact token counting and persistent cross-session memory. We mitigate this by using character-based approximation and documenting the limitation clearly.
 
-## 2. Token Budget vs. Answer Quality
+## 2. Memory Strategy: Summarisation via LLM Constraints
 
-We define two budget knobs:
+Without an external vector store, the "summarisation cascade" is implemented through LLM-level constraints:
 
-- **Per-sub-query budget (default 2 000 tokens)**: limits how much detail each research step can retain.
-- **Per-session budget (default 10 000 tokens)**: limits the total research effort.
-
-### Empirical reasoning
-
-| Budget Config | Expected Behaviour |
+| Layer | Mechanism |
 |---|---|
-| Sub-query 500 / Session 3 000 | Very aggressive compression; answers are short and may miss nuance |
-| Sub-query 2 000 / Session 10 000 | **Sweet spot** — enough room for 5 sub-questions × 2 000 tokens each |
-| Sub-query 5 000 / Session 50 000 | Near-unconstrained; defeats the purpose of the constraint exercise |
+| **Per-subquery budget** | `max_tokens=2000` on the Research LLM node — the model physically cannot produce more tokens |
+| **Per-session budget** | Code node counts total characters across all research results, truncates if `chars / 4 > 10,000` |
+| **Max sub-questions** | Decompose prompt instructs "at most 5"; Code node enforces `[:5]` |
 
-The 2 000 / 10 000 default was chosen because:
-1. It forces the summariser to actually compress (most raw LLM answers are 500–3 000 tokens).
-2. It allows all 5 sub-questions to fit without exhaustion.
-3. It keeps cost per session low (~$0.01–0.05 on GPT-4.1 pricing).
+This is a different strategy from the classical "store-then-retrieve" RAG approach. Instead of storing summaries in a vector DB and retrieving by similarity, we pass all research results directly through the workflow graph. The Aggregate Code node acts as the "memory gate" — it enforces the session budget by truncating the combined context before it reaches the Synthesize LLM.
 
-## 3. Web Search Integration: DuckDuckGo vs. Alternatives
+### Comparison with vector-based approaches
 
-| Search Provider | Pros | Cons |
+| Strategy | Pros | Cons |
 |---|---|---|
-| **DuckDuckGo** *(chosen)* | Free, no API key, good privacy | Rate-limited for automation; results are general-purpose |
-| Tavily | Purpose-built for AI agents; structured results | Paid API ($); adds vendor dependency |
-| SearXNG (self-hosted) | No rate limits; privacy-focused | Requires hosting a separate service |
-| Google Custom Search | High-quality results | Paid API ($); complex setup |
-| No web search (LLM-only) | Zero external dependencies | Stuck with training cutoff; can't answer about recent events |
+| **Vector RAG (ChromaDB)** | Similarity-based retrieval; scales to many documents | Requires external service; embedding quality varies |
+| **Direct context passing** *(chosen)* | Zero infrastructure; deterministic; all results used | Context window limit; no cross-session memory |
 
-### Why DuckDuckGo
+For a take-home prototype with 3-5 sub-questions, direct context passing is sufficient. The entire research output (~5,000-10,000 tokens) fits within modern context windows. Vector retrieval would only become necessary with dozens of sub-questions or cross-session persistence.
 
-For a prototype / take-home, DuckDuckGo offers the best trade-off: **zero cost, zero setup, real web data**. The `duckduckgo-search` Python package wraps the public API and returns structured results (title, body, URL) that we feed directly to the LLM as grounding context.
+## 3. Token Counting: Approximation vs. Exact
 
-The search module is designed with graceful fallback — if DuckDuckGo is unavailable or the package isn't installed, the agent falls back to pure LLM knowledge. This means the system never breaks due to search failures.
+The Dify code sandbox (Python 3.14, sandboxed) does not include `tiktoken`. We use:
 
-**Trade-off acknowledged**: DuckDuckGo may rate-limit automated queries during heavy use. A production system would switch to Tavily or self-hosted SearXNG.
+```python
+approx_tokens = len(text) // 4
+```
+
+### How accurate is this?
+
+| Method | "Hello, world!" | 500-word paragraph | Relative error |
+|---|---|---|---|
+| tiktoken (cl100k_base) | 4 tokens | ~670 tokens | — |
+| `len(text) // 4` | 3 tokens | ~625 tokens | ~5-10% |
+| `len(text.split())` | 2 tokens | ~500 tokens | ~25% |
+
+The character-based heuristic (`chars / 4`) is the standard approximation used across the industry (OpenAI's own documentation suggests "1 token ~= 4 characters"). For budget enforcement purposes, a 5-10% error is acceptable — the constraints are self-defined and the purpose is to demonstrate the *concept* of bounded-memory research, not production-grade accounting.
+
+**Mitigation**: the budget report explicitly states "Token counts are approximated (chars / 4)" so the reviewer knows this is intentional.
 
 ## 4. Cost Analysis
 
-### Per-session cost breakdown
-
-Assuming GPT-4.1 pricing via the HKBU API (input: $2/1M tokens, output: $8/1M tokens):
+Assuming GPT-4o-mini pricing ($0.15 / 1M input, $0.60 / 1M output):
 
 | Step | Input Tokens | Output Tokens | Estimated Cost |
 |---|---|---|---|
-| Decompose (1 call) | ~200 | ~150 | ~$0.002 |
-| Research (5 calls) | ~1 500 × 5 | ~2 000 × 5 | ~$0.095 |
-| Synthesize (1 call) | ~10 000 | ~1 500 | ~$0.032 |
-| **Total** | **~17 700** | **~11 650** | **~$0.13** |
+| Decompose (1 call) | ~200 | ~100 | ~$0.0001 |
+| Research (5 calls) | ~200 x 5 | ~2,000 x 5 | ~$0.006 |
+| Synthesize (1 call) | ~10,000 | ~2,000 | ~$0.003 |
+| **Total** | **~11,200** | **~12,100** | **~$0.009** |
 
-Note: research calls now include web search context (~300–500 extra input tokens per call), which slightly increases input cost but significantly improves answer quality.
+At less than $0.01 per research session, the agent is extremely cost-efficient. For comparison, using GPT-4.1 via the HKBU API (estimated $2/$8 per 1M tokens) would cost ~$0.12 per session — still far cheaper than manual research.
 
-### Cost tracking in practice
-
-The `LLMClient` class tracks cumulative token usage across all calls in a session and estimates USD cost in real time. Every API response includes:
-
-```json
-{
-  "llm_usage": {
-    "llm_calls": 6,
-    "total_input_tokens": 15234,
-    "total_output_tokens": 8921,
-    "estimated_cost_usd": 0.0319
-  }
-}
-```
-
-For comparison, a human analyst answering the same multi-part question might take 1–2 hours. At $50/hour, that's $50–100 vs. ~$0.05–0.13 — a **500–1 000× cost reduction** with seconds of latency.
-
-## 5. Dify vs. Code-Only Orchestration
-
-| Aspect | Dify | Pure Python (e.g. LangChain) |
-|---|---|---|
-| Visual editing | Yes — non-engineers can modify the flow | No |
-| Reproducibility | DSL export/import | Code in git (arguably simpler) |
-| Debugging | Built-in run history & node-level logs | Requires custom logging |
-| Flexibility | Limited to supported node types | Unlimited |
-| Vendor lock-in | Moderate (Dify-specific DSL) | Low |
-
-Dify was chosen because the brief suggests it, and because the visual workflow makes the architecture immediately understandable to reviewers. The memory service is kept as a separate Python API precisely to avoid lock-in — it works with any HTTP-capable orchestrator.
-
-Additionally, the `/pipeline` endpoint and CLI tool (`src/cli.py`) provide a **Dify-free path** to test the full pipeline, ensuring the project is usable even without Dify installed.
-
-## 6. ChromaDB vs. Alternatives
-
-| Vector Store | Why Considered | Why Chosen / Not |
-|---|---|---|
-| **ChromaDB** *(chosen)* | Embedded, zero-config, Python-native | Perfect for a prototype; no external service needed |
-| Qdrant | Better production scalability | Overkill for a take-home; requires separate server |
-| Simple JSON log | Minimal dependencies | No vector similarity search; retrieval would be keyword-only |
-| Dify built-in KB | Integrated | Less control over token tracking; harder to export/test |
-
-## 7. Design Decisions for Demonstrability
+## 5. Dify Workflow Design Decisions
 
 | Decision | Why |
 |---|---|
-| CLI tool (`src/cli.py`) | Reviewer can test the full pipeline in one command without setting up Dify |
-| `--offline` mode | Demonstrates the pipeline flow without an API key |
-| `/pipeline` endpoint | Full research flow in a single HTTP call — easy to test with `curl` |
-| Structured logging | Every step logged with timestamps, making the research process transparent |
-| Cost tracking in responses | Shows business awareness without requiring external monitoring |
+| Workflow mode (not Agent/Chatflow) | Deterministic flow matches the decompose-research-synthesise pattern; easier to debug and reproduce |
+| Code nodes for budget tracking | Dify's native nodes don't support custom constraint logic; Code nodes provide full Python flexibility |
+| JSON array for decomposition | Structured output enables reliable iteration; fallback parser handles non-JSON LLM responses |
+| Post-iteration budget enforcement | Dify iterations don't support conditional early stopping; enforcing after iteration is simpler and still effective |
+| Separate Parse node | LLM output is raw text; a dedicated Code node isolates parsing logic and handles edge cases |
 
-## 8. Limitations
+## 6. Limitations
 
-1. **DuckDuckGo rate limits**: automated queries may be throttled. A production system needs Tavily or SearXNG.
-2. **Single-session memory**: the budget resets per session. Cross-session retrieval is supported by ChromaDB (data persists), but the budget counter does not carry over.
-3. **Lossy summarisation**: aggressive compression may drop details. A "detail-preserve" mode could store both the summary and a pointer to the full text.
-4. **Embedding quality**: ChromaDB's default all-MiniLM-L6-v2 embedding is general-purpose. Domain-specific embeddings (e.g. fine-tuned on regulatory text) would improve retrieval precision.
-5. **No parallelism**: sub-questions are researched sequentially. Parallel execution would reduce latency for independent sub-questions.
+1. **Approximate token counting**: `chars / 4` is ~5-10% off from tiktoken. Acceptable for a prototype but would need exact counting in production.
+2. **No web search**: research uses LLM parametric knowledge only. Adding a Dify Tool node for Tavily/SearXNG would ground answers in real-time data.
+3. **No persistent memory**: research results live only within the workflow run. A Dify Knowledge Base integration would enable cross-session retrieval.
+4. **No early stopping**: if the budget is exhausted mid-iteration, remaining sub-questions still execute. Dify doesn't natively support conditional break within iterations.
+5. **Model dependency**: the workflow requires the reviewer to configure a model provider. The SETUP_GUIDE provides step-by-step instructions.
 
-## 9. What I Would Do With More Time
+## 7. What I Would Do With More Time
 
-- **Tavily integration** for reliable, AI-optimised web search.
-- **Importance scoring**: allocate more token budget to higher-priority sub-questions rather than splitting evenly.
-- **Streaming synthesis** for better UX during long answers.
-- **Web UI** on top of the pipeline API for demo purposes.
-- **Integration tests** that mock the LLM API to verify the full pipeline without incurring API costs.
-- **Cross-session memory** with configurable retention policies.
-- **Parallel sub-query research** using `asyncio.gather()` for lower latency.
+- **Web search tool**: add a Dify Tool node (Tavily or SearXNG) before the Research LLM so each sub-question is grounded in real-time web data.
+- **Knowledge Base integration**: store research results in a Dify Knowledge Base for cross-session memory and similarity-based retrieval.
+- **Conversation variables**: use Dify's Variable Assigner to track budget in real time and implement conditional early stopping within the iteration.
+- **Agent mode**: switch from Workflow to Agent so the LLM can dynamically choose between web search, knowledge base retrieval, and direct answer.
+- **Streaming output**: use Dify's chatflow mode with Answer nodes for real-time streaming of the research process.
+- **Parallel research**: enable parallel iteration to reduce latency when sub-questions are independent.

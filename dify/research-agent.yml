@@ -1,231 +1,585 @@
 app:
   description: >-
-    Deep Research Agent that answers complex multi-part queries under
-    self-defined memory/token constraints using a summarization cascade.
+    Deep Research Agent (G3) — answers complex multi-part queries under
+    self-defined memory/token constraints. Decomposes questions into
+    sub-questions, researches each with a per-subquery token budget,
+    tracks cumulative usage, then synthesises a final cited answer
+    with a budget report. Entirely self-contained in Dify.
   icon: "\U0001F50D"
-  icon_background: "#2563EB"
+  icon_background: '#2563EB'
   mode: workflow
   name: Deep Research Agent (G3)
-
+  use_icon_as_answer_icon: false
+dependencies: []
 kind: app
-version: 0.1.5
-
+version: 0.3.1
 workflow:
   conversation_variables: []
-
-  environment_variables:
-    - name: MEMORY_SERVICE_URL
-      value_type: string
-      value: "http://host.docker.internal:8100"
-    - name: SESSION_ID
-      value_type: string
-      value: "default-session"
-
+  environment_variables: []
+  features:
+    file_upload:
+      enabled: false
+    opening_statement: ''
+    retriever_resource:
+      enabled: false
+    sensitive_word_avoidance:
+      enabled: false
+    speech_to_text:
+      enabled: false
+    suggested_questions: []
+    suggested_questions_after_answer:
+      enabled: false
+    text_to_speech:
+      enabled: false
   graph:
     edges:
-      - source: start
-        target: reset_budget
-      - source: reset_budget
-        target: decompose
-      - source: decompose
+      - data:
+          isInIteration: false
+          isInLoop: false
+          sourceType: start
+          targetType: llm
+        id: start-to-decompose
+        source: start
+        sourceHandle: source
+        target: decompose_llm
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data:
+          isInIteration: false
+          isInLoop: false
+          sourceType: llm
+          targetType: code
+        id: decompose-to-parse
+        source: decompose_llm
+        sourceHandle: source
+        target: parse_subquestions
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data:
+          isInIteration: false
+          isInLoop: false
+          sourceType: code
+          targetType: iteration
+        id: parse-to-iterator
+        source: parse_subquestions
+        sourceHandle: source
         target: iterator
-      - source: iterator
-        target: research_subquery
-      - source: research_subquery
-        target: check_budget
-      - source: check_budget
-        target: iterator
-        sourceHandle: continue
-      - source: iterator
-        target: synthesize
-        sourceHandle: done
-      - source: synthesize
-        target: format_output
-      - source: format_output
-        target: end
-
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data:
+          isInIteration: true
+          isInLoop: false
+          iteration_id: iterator
+          sourceType: iteration-start
+          targetType: llm
+        id: iterstart-to-research
+        source: iterator_start
+        sourceHandle: source
+        target: research_llm
+        targetHandle: target
+        type: custom
+        zIndex: 1002
+      - data:
+          isInIteration: false
+          isInLoop: false
+          sourceType: iteration
+          targetType: code
+        id: iterator-to-aggregate
+        source: iterator
+        sourceHandle: source
+        target: aggregate
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data:
+          isInIteration: false
+          isInLoop: false
+          sourceType: code
+          targetType: llm
+        id: aggregate-to-synthesize
+        source: aggregate
+        sourceHandle: source
+        target: synthesize_llm
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data:
+          isInIteration: false
+          isInLoop: false
+          sourceType: llm
+          targetType: code
+        id: synthesize-to-format
+        source: synthesize_llm
+        sourceHandle: source
+        target: format_report
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data:
+          isInIteration: false
+          isInLoop: false
+          sourceType: code
+          targetType: end
+        id: format-to-end
+        source: format_report
+        sourceHandle: source
+        target: end_node
+        targetHandle: target
+        type: custom
+        zIndex: 0
     nodes:
-      # ── START ──────────────────────────────────────────────
-      - id: start
-        type: start
-        data:
+      # ── START ──────────────────────────────────────────
+      - data:
+          desc: 'Enter a complex, multi-part research question'
+          selected: false
           title: Start
+          type: start
           variables:
-            - label: User Query
-              variable: query
-              type: text-input
-              required: true
+            - label: Research Question
               max_length: 2000
+              options: []
+              required: true
+              type: text-input
+              variable: query
+        height: 90
+        id: start
+        position:
+          x: 30
+          y: 282
+        positionAbsolute:
+          x: 30
+          y: 282
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 244
 
-      # ── RESET SESSION BUDGET ──────────────────────────────
-      - id: reset_budget
-        type: http-request
-        data:
-          title: Reset Session Budget
-          desc: Clear token counters for a fresh research session
-          method: POST
-          url: "{{#env.MEMORY_SERVICE_URL#}}/memory/reset"
-          headers: []
-          body:
-            type: none
-          timeout:
-            max_connect_timeout: 10
-            max_read_timeout: 30
-          authorization:
-            type: no-auth
+      # ── LLM: DECOMPOSE QUERY ──────────────────────────
+      - data:
+          context:
+            enabled: false
+            variable_selector: []
+          desc: 'Break the complex query into independent sub-questions'
+          model:
+            completion_params:
+              temperature: 0.4
+              max_tokens: 500
+            mode: chat
+            name: gpt-4o-mini
+            provider: langgenius/openai/openai
+          prompt_template:
+            - id: decompose-sys-001
+              role: system
+              text: >-
+                You are a research planning assistant. Given a complex query,
+                break it into at most 5 independent sub-questions that together
+                cover the full scope of the original question. Return ONLY a
+                JSON array of strings — no explanation, no markdown, no code
+                fences.
 
-      # ── DECOMPOSE QUERY ───────────────────────────────────
-      - id: decompose
-        type: http-request
-        data:
+                Example output:
+                ["What is X?", "How does Y compare to Z?", "What are the implications of W?"]
+            - id: decompose-usr-001
+              role: user
+              text: '{{#start.query#}}'
+          selected: false
           title: Decompose Query
-          desc: Break the user's complex question into sub-questions via the memory service
-          method: POST
-          url: "{{#env.MEMORY_SERVICE_URL#}}/decompose"
-          headers:
-            - key: Content-Type
-              value: application/json
-          body:
-            type: json
-            data: |
-              {
-                "query": "{{#start.query#}}"
-              }
-          timeout:
-            max_connect_timeout: 10
-            max_read_timeout: 60
-          authorization:
-            type: no-auth
+          type: llm
+          variables: []
+          vision:
+            enabled: false
+        height: 90
+        id: decompose_llm
+        position:
+          x: 334
+          y: 282
+        positionAbsolute:
+          x: 334
+          y: 282
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 244
 
-      # ── ITERATOR (loop over sub-questions) ────────────────
-      - id: iterator
-        type: iteration
-        data:
-          title: Research Each Sub-Question
-          desc: Iterate over decomposed sub-questions
+      # ── CODE: PARSE SUB-QUESTIONS ──────────────────────
+      - data:
+          code: |
+            import json
+
+            def main(text: str) -> dict:
+                clean = text.strip()
+                if clean.startswith("```"):
+                    lines = clean.split("\n")
+                    clean = "\n".join(lines[1:-1]).strip()
+                if clean.endswith("```"):
+                    clean = clean[:-3].strip()
+
+                try:
+                    questions = json.loads(clean)
+                    if not isinstance(questions, list):
+                        questions = [str(questions)]
+                except json.JSONDecodeError:
+                    questions = [
+                        line.strip().lstrip("-•*0123456789.) ")
+                        for line in clean.splitlines()
+                        if line.strip() and len(line.strip()) > 5
+                    ]
+
+                questions = [q for q in questions[:5] if q]
+                return {
+                    "subquestions": questions,
+                    "count": len(questions),
+                }
+          code_language: python3
+          desc: 'Extract the JSON array of sub-questions from the LLM response'
+          outputs:
+            subquestions:
+              children: null
+              type: array[string]
+            count:
+              children: null
+              type: number
+          selected: false
+          title: Parse Sub-Questions
+          type: code
+          variables:
+            - value_selector:
+                - decompose_llm
+                - text
+              variable: text
+        height: 54
+        id: parse_subquestions
+        position:
+          x: 638
+          y: 282
+        positionAbsolute:
+          x: 638
+          y: 282
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 244
+
+      # ── ITERATION ──────────────────────────────────────
+      - data:
+          desc: 'Research each sub-question with a per-subquery token budget'
+          error_handle_mode: terminated
+          height: 178
+          is_parallel: false
+          iterator_input_type: array[string]
           iterator_selector:
-            - decompose
-            - body
+            - parse_subquestions
             - subquestions
           output_selector:
-            - research_subquery
-            - body
+            - research_llm
+            - text
+          output_type: array[string]
+          parallel_nums: 1
+          selected: false
+          start_node_id: iterator_start
+          title: Research Each Sub-Question
+          type: iteration
+          width: 388
+        height: 178
+        id: iterator
+        position:
+          x: 942
+          y: 282
+        positionAbsolute:
+          x: 942
+          y: 282
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 388
+        zIndex: 1
 
-      # ── RESEARCH SINGLE SUB-QUERY ─────────────────────────
-      - id: research_subquery
-        type: http-request
-        data:
-          title: Research Sub-Query
-          desc: >-
-            Send each sub-question to the memory service which researches it,
-            summarises the result within the token budget, and stores it.
-          method: POST
-          url: "{{#env.MEMORY_SERVICE_URL#}}/research"
-          headers:
-            - key: Content-Type
-              value: application/json
-          body:
-            type: json
-            data: |
-              {
-                "subquery": "{{#iterator.item#}}",
-                "session_id": "{{#env.SESSION_ID#}}"
-              }
-          timeout:
-            max_connect_timeout: 10
-            max_read_timeout: 60
-          authorization:
-            type: no-auth
+      # ── ITERATION START ────────────────────────────────
+      - data:
+          desc: ''
+          isInIteration: true
+          selected: false
+          title: ''
+          type: iteration-start
+        draggable: false
+        height: 48
+        id: iterator_start
+        parentId: iterator
+        position:
+          x: 24
+          y: 68
+        positionAbsolute:
+          x: 966
+          y: 350
+        selectable: false
+        sourcePosition: right
+        targetPosition: left
+        type: custom-iteration-start
+        width: 44
+        zIndex: 1002
 
-      # ── CHECK BUDGET ──────────────────────────────────────
-      - id: check_budget
-        type: http-request
-        data:
-          title: Check Token Budget
-          desc: Query remaining token budget before next iteration
-          method: GET
-          url: "{{#env.MEMORY_SERVICE_URL#}}/memory/budget"
-          headers: []
-          body:
-            type: none
-          timeout:
-            max_connect_timeout: 10
-            max_read_timeout: 10
-          authorization:
-            type: no-auth
-
-      # ── SYNTHESIZE FINAL ANSWER ───────────────────────────
-      - id: synthesize
-        type: http-request
-        data:
-          title: Synthesize Answer
-          desc: >-
-            Retrieve all relevant stored summaries and synthesise
-            a comprehensive, cited final answer.
-          method: POST
-          url: "{{#env.MEMORY_SERVICE_URL#}}/synthesize"
-          headers:
-            - key: Content-Type
-              value: application/json
-          body:
-            type: json
-            data: |
-              {
-                "query": "{{#start.query#}}",
-                "top_k": 10,
-                "session_id": "{{#env.SESSION_ID#}}"
-              }
-          timeout:
-            max_connect_timeout: 10
-            max_read_timeout: 120
-          authorization:
-            type: no-auth
-
-      # ── FORMAT OUTPUT ─────────────────────────────────────
-      - id: format_output
-        type: llm
-        data:
-          title: Format Output
-          desc: Clean up the synthesised answer and append budget stats
+      # ── LLM: RESEARCH SUB-QUESTION (inside iteration) ─
+      - data:
+          context:
+            enabled: false
+            variable_selector: []
+          desc: 'Answer each sub-question concisely within the token budget'
+          isInIteration: true
+          isInLoop: false
+          iteration_id: iterator
           model:
-            provider: openai_api_compatible
-            name: gpt-4.1
-            mode: chat
             completion_params:
-              temperature: 0.2
-              max_tokens: 1000
-          prompts:
-            - role: system
+              temperature: 0.5
+              max_tokens: 2000
+            mode: chat
+            name: gpt-4o-mini
+            provider: langgenius/openai/openai
+          prompt_template:
+            - id: research-sys-001
+              role: system
               text: >-
-                You are a formatting assistant. Take the raw JSON response and
-                present it as a clean, well-structured research report in
-                Markdown. Include the sources used and the token budget summary
-                at the bottom. Do NOT add information that is not in the input.
-            - role: user
-              text: >-
-                Raw response:
-                {{#synthesize.body#}}
+                You are a research assistant. Answer the following question with
+                factual, well-sourced information. Be concise and precise — your
+                answer must fit within roughly 500 words. Include key facts,
+                statistics, dates, and cite sources where possible.
+            - id: research-usr-001
+              role: user
+              text: '{{#iterator.item#}}'
+          selected: false
+          title: Research Sub-Question
+          type: llm
+          variables: []
+          vision:
+            enabled: false
+        height: 90
+        id: research_llm
+        parentId: iterator
+        position:
+          x: 128
+          y: 68
+        positionAbsolute:
+          x: 1070
+          y: 350
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 244
+        zIndex: 1002
 
-                Budget info:
-                Sources used: {{#synthesize.body.sources_used#}}
-                Context tokens: {{#synthesize.body.context_tokens#}}
-                Total tokens used: {{#synthesize.body.budget.tokens_used#}}
-                Tokens remaining: {{#synthesize.body.budget.tokens_remaining#}}
-          memory:
-            role_prefix:
-              assistant: ""
-              user: ""
-            window:
-              enabled: false
-              size: 0
+      # ── CODE: AGGREGATE + BUDGET ───────────────────────
+      - data:
+          code: |
+            def main(results: list, query: str) -> dict:
+                MAX_PER_SUBQUERY = 2000
+                MAX_PER_SESSION = 10000
 
-      # ── END ────────────────────────────────────────────────
-      - id: end
-        type: end
-        data:
-          title: End
+                context_parts = []
+                total_chars = 0
+                for i, r in enumerate(results):
+                    context_parts.append(f"[Source {i + 1}]\n{r}")
+                    total_chars += len(r)
+
+                context = "\n\n".join(context_parts)
+                approx_tokens = len(context) // 4
+
+                truncated = False
+                if approx_tokens > MAX_PER_SESSION:
+                    max_chars = MAX_PER_SESSION * 4
+                    context = context[:max_chars]
+                    approx_tokens = MAX_PER_SESSION
+                    truncated = True
+
+                remaining = MAX_PER_SESSION - approx_tokens
+
+                budget_text = (
+                    f"Tokens used: ~{approx_tokens:,} / {MAX_PER_SESSION:,}\n"
+                    f"Tokens remaining: ~{remaining:,}\n"
+                    f"Sub-queries completed: {len(results)} / 5\n"
+                    f"Per-subquery limit: {MAX_PER_SUBQUERY:,} tokens\n"
+                    f"Truncated: {'Yes' if truncated else 'No'}\n"
+                    f"Budget status: {'WITHIN BUDGET' if remaining > 0 else 'BUDGET EXHAUSTED'}"
+                )
+
+                return {
+                    "context": context,
+                    "budget_text": budget_text,
+                    "tokens_used": approx_tokens,
+                    "subqueries_done": len(results),
+                }
+          code_language: python3
+          desc: 'Combine research results, count tokens, enforce session budget'
           outputs:
-            - variable: answer
-              value_selector:
-                - format_output
+            context:
+              children: null
+              type: string
+            budget_text:
+              children: null
+              type: string
+            tokens_used:
+              children: null
+              type: number
+            subqueries_done:
+              children: null
+              type: number
+          selected: false
+          title: Aggregate + Budget
+          type: code
+          variables:
+            - value_selector:
+                - iterator
+                - output
+              variable: results
+            - value_selector:
+                - start
+                - query
+              variable: query
+        height: 54
+        id: aggregate
+        position:
+          x: 1390
+          y: 282
+        positionAbsolute:
+          x: 1390
+          y: 282
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 244
+
+      # ── LLM: SYNTHESIZE FINAL ANSWER ───────────────────
+      - data:
+          context:
+            enabled: false
+            variable_selector: []
+          desc: 'Produce a comprehensive cited answer from the research context'
+          model:
+            completion_params:
+              temperature: 0.4
+              max_tokens: 2000
+            mode: chat
+            name: gpt-4o-mini
+            provider: langgenius/openai/openai
+          prompt_template:
+            - id: synth-sys-001
+              role: system
+              text: >-
+                You are a senior research analyst. Using ONLY the provided
+                research context below, write a comprehensive, well-structured
+                answer to the user's question. Cite your sources as [Source N].
+                If the context is insufficient for any part, clearly state what
+                information is missing.
+
+
+                --- RESEARCH CONTEXT ---
+
+                {{#aggregate.context#}}
+            - id: synth-usr-001
+              role: user
+              text: '{{#start.query#}}'
+          selected: false
+          title: Synthesize Answer
+          type: llm
+          variables: []
+          vision:
+            enabled: false
+        height: 90
+        id: synthesize_llm
+        position:
+          x: 1694
+          y: 282
+        positionAbsolute:
+          x: 1694
+          y: 282
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 244
+
+      # ── CODE: FORMAT REPORT ────────────────────────────
+      - data:
+          code: |
+            def main(answer: str, budget_text: str, subqueries_done: int) -> dict:
+                report = (
+                    "## Research Report\n\n"
+                    f"{answer}\n\n"
+                    "---\n\n"
+                    "### Constraint & Budget Summary\n\n"
+                    "| Metric | Value |\n"
+                    "|---|---|\n"
+                )
+                for line in budget_text.strip().split("\n"):
+                    key, _, val = line.partition(":")
+                    report += f"| {key.strip()} | {val.strip()} |\n"
+
+                report += (
+                    "\n*Token counts are approximated (chars / 4) since the Dify "
+                    "sandbox does not include tiktoken. See evaluation.md for "
+                    "trade-off analysis.*\n"
+                )
+                return {"report": report}
+          code_language: python3
+          desc: 'Format the final answer with budget summary as Markdown'
+          outputs:
+            report:
+              children: null
+              type: string
+          selected: false
+          title: Format Report
+          type: code
+          variables:
+            - value_selector:
+                - synthesize_llm
                 - text
+              variable: answer
+            - value_selector:
+                - aggregate
+                - budget_text
+              variable: budget_text
+            - value_selector:
+                - aggregate
+                - subqueries_done
+              variable: subqueries_done
+        height: 54
+        id: format_report
+        position:
+          x: 1998
+          y: 282
+        positionAbsolute:
+          x: 1998
+          y: 282
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 244
+
+      # ── END ────────────────────────────────────────────
+      - data:
+          desc: ''
+          outputs:
+            - value_selector:
+                - format_report
+                - report
+              value_type: string
+              variable: result
+          selected: false
+          title: End
+          type: end
+        height: 90
+        id: end_node
+        position:
+          x: 2302
+          y: 282
+        positionAbsolute:
+          x: 2302
+          y: 282
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 244
+    viewport:
+      x: 0
+      y: 0
+      zoom: 0.7

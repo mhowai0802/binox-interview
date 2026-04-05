@@ -1,18 +1,3 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-*.egg-info/
-dist/
-build/
-.eggs/
-
-# Virtual environments
-venv/
-.venv/
-env/
-
 # Environment variables
 .env
 
@@ -22,23 +7,12 @@ env/
 *.swp
 *.swo
 
-# Docker
-docker/volumes/
-
-# ChromaDB
-chroma_data/
-
 # OS
 .DS_Store
 Thumbs.db
 
 # Assignment PDF (do not distribute)
 *.pdf
-
-# Test / Coverage
-.pytest_cache/
-htmlcov/
-.coverage
 
 # Dify local data
 dify/docker/volumes/
