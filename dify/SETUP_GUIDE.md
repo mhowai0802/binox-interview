@@ -1,6 +1,6 @@
 # Dify Setup Guide
 
-> **Quick option**: Run `./setup.sh` from the project root to automate steps 3-7 below. You only need to do steps 1-2 manually (install Dify + add model providers).
+> **Quick option**: Run `./setup.sh` from the project root to automate steps 2-7 below. You only need to do step 1 manually (install Dify).
 
 ## Prerequisites
 
