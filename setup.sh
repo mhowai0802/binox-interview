@@ -48,13 +48,26 @@ fi
 
 API="$DIFY_URL/console/api"
 COOKIE_JAR=$(mktemp)
+CSRF_TOKEN=""
 trap 'rm -f "$COOKIE_JAR" 2>/dev/null' EXIT
 
-_py() { python3 -c "import sys,json; $1"; }
+_py() { python3 -c "import sys,json; json.load=lambda f,**kw: json.loads(f.read(),strict=False); $1"; }
 
-_api_get()  { curl -s -b "$COOKIE_JAR" "$API$1"; }
-_api_post() { curl -s -b "$COOKIE_JAR" -X POST "$API$1" -H "Content-Type: application/json" -d "$2"; }
-_api_post_status() { curl -s -w "\n%{http_code}" -b "$COOKIE_JAR" -X POST "$API$1" -H "Content-Type: application/json" -d "$2"; }
+_read_csrf() {
+  CSRF_TOKEN=$(python3 -c "
+import sys
+for line in open('$COOKIE_JAR'):
+    parts = line.strip().split('\t')
+    if len(parts) >= 7 and parts[5] == 'csrf_token':
+        print(parts[6]); break
+else:
+    print('')
+")
+}
+
+_api_get()  { curl -s -b "$COOKIE_JAR" -H "X-CSRF-Token: $CSRF_TOKEN" "$API$1"; }
+_api_post() { curl -s -b "$COOKIE_JAR" -X POST "$API$1" -H "Content-Type: application/json" -H "X-CSRF-Token: $CSRF_TOKEN" -d "$2"; }
+_api_post_status() { curl -s -w "\n%{http_code}" -b "$COOKIE_JAR" -X POST "$API$1" -H "Content-Type: application/json" -H "X-CSRF-Token: $CSRF_TOKEN" -d "$2"; }
 
 echo "================================================"
 echo "  Deep Research Agent (G3) — Automated Setup"
@@ -111,27 +124,39 @@ LOGIN_CODE=$(echo "$LOGIN_RESP" | tail -1)
 if [ "$LOGIN_CODE" != "200" ]; then
   echo "  ERROR: Login failed (HTTP $LOGIN_CODE)."
   echo "  $(echo "$LOGIN_RESP" | sed '$d')"
+  if [ "$SETUP_STATUS" != "not_started" ]; then
+    echo ""
+    echo "  Dify was already set up with a different account."
+    echo "  Update DIFY_ADMIN_EMAIL and DIFY_ADMIN_PASSWORD in .env to match"
+    echo "  your existing Dify admin credentials, then re-run this script."
+  fi
   exit 1
 fi
+_read_csrf
 echo "  Logged in."
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # STEP 2: INSTALL PLUGINS + CONFIGURE MODELS
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 has_active_models() {
-  _api_get "/workspaces/current/models/model-types/$1" | _py "
-data = json.load(sys.stdin).get('data', [])
-print('yes' if [m for m in data if m.get('status') == 'active'] else 'no')"
+  _api_get "/workspaces/current/models/model-types/$1" | python3 -c "
+import sys, json
+data = json.loads(sys.stdin.read(), strict=False).get('data', [])
+active = [p for p in data if p.get('status') == 'active' and p.get('models')]
+print('yes' if active else 'no')"
 }
 
 get_first_embedding() {
-  _api_get "/workspaces/current/models/model-types/text-embedding" | _py "
-data = json.load(sys.stdin).get('data', [])
-active = [m for m in data if m.get('status') == 'active']
-if not active: print('NONE|NONE')
+  _api_get "/workspaces/current/models/model-types/text-embedding" | python3 -c "
+import sys, json
+data = json.loads(sys.stdin.read(), strict=False).get('data', [])
+for p in data:
+    if p.get('status') == 'active' and p.get('models'):
+        m = p['models'][0]
+        print(f\"{p.get('provider','NONE')}|{m.get('model','NONE')}\")
+        break
 else:
-    m = active[0]
-    print(f\"{m.get('provider',{}).get('provider','')}\|{m.get('model','')}\")"
+    print('NONE|NONE')"
 }
 
 install_plugin() {
@@ -139,11 +164,31 @@ install_plugin() {
   echo "  Installing plugin: $plugin_id ..."
   local pkg_id
   pkg_id=$(curl -s "https://marketplace.dify.ai/api/v1/plugins/$plugin_id" \
-    -H "Accept: application/json" | _py "print(json.load(sys.stdin)['data']['plugin']['latest_package_identifier'])")
-  _api_post "/workspaces/current/plugin/install/marketplace" \
-    "{\"plugin_unique_identifiers\": [\"$pkg_id\"]}" > /dev/null
-  echo "  Done."
-  sleep 3
+    -H "Accept: application/json" | python3 -c "
+import sys, json
+data = json.loads(sys.stdin.read(), strict=False)
+print(data['data']['plugin']['latest_package_identifier'])")
+  echo "  Package: $pkg_id"
+  local install_resp
+  install_resp=$(_api_post "/workspaces/current/plugin/install/marketplace" \
+    "{\"plugin_unique_identifiers\": [\"$pkg_id\"]}")
+  echo "  Install response: $install_resp"
+
+  echo "  Waiting for plugin to become ready..."
+  for i in $(seq 1 15); do
+    sleep 2
+    local count
+    count=$(_api_get "/workspaces/current/plugin/list?page=1&page_size=20" | python3 -c "
+import sys, json
+data = json.loads(sys.stdin.read(), strict=False)
+plugins = data.get('plugins', [])
+print(len(plugins))" 2>/dev/null || echo "0")
+    if [ "$count" -gt 0 ]; then
+      echo "  Plugin installed."
+      return 0
+    fi
+  done
+  echo "  WARNING: Plugin not detected after 30s. Continuing anyway..."
 }
 
 echo ""
@@ -243,7 +288,7 @@ echo "[3/7] Uploading sample documents..."
 FILE_IDS=()
 for f in "$SCRIPT_DIR/dify/sample_knowledge/"*.txt; do
   RESP=$(curl -s -b "$COOKIE_JAR" -X POST "$API/files/upload" \
-    -F "file=@$f" -F "source=datasets")
+    -H "X-CSRF-Token: $CSRF_TOKEN" -F "file=@$f" -F "source=datasets")
   FILE_ID=$(_py "print(json.load(sys.stdin)['id'])" <<< "$RESP")
   FILE_IDS+=("$FILE_ID")
   echo "  $(basename "$f") → $FILE_ID"
@@ -348,7 +393,7 @@ fi
 echo ""
 echo "[7/7] Importing workflow..."
 IMPORT_RESP=$(curl -s -w "\n%{http_code}" -b "$COOKIE_JAR" -X POST "$API/apps/imports" \
-  -H "Content-Type: application/json" \
+  -H "Content-Type: application/json" -H "X-CSRF-Token: $CSRF_TOKEN" \
   -d "{\"mode\": \"yaml-content\", \"yaml_content\": $YAML_CONTENT}")
 
 IMPORT_CODE=$(echo "$IMPORT_RESP" | tail -1)
