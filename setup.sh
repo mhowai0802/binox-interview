@@ -1,20 +1,49 @@
 #!/usr/bin/env bash
 #
-# Automated setup for the Deep Research Agent (G3) in Dify.
-# Handles everything: plugin install, model provider config, Knowledge Base
-# creation, document upload, indexing, and workflow import.
+# Fully automated setup for the Deep Research Agent (G3) in Dify.
+# Reads all configuration from .env — no interactive prompts.
+#
+# What it does:
+#   1. Registers a Dify admin account (if first run)
+#   2. Installs model provider plugins from marketplace
+#   3. Configures LLM + embedding credentials
+#   4. Creates a Knowledge Base and uploads sample documents
+#   5. Waits for vector indexing
+#   6. Imports the workflow with correct KB ID + model references
 #
 # Prerequisites: Dify running (docker compose up -d), curl, python3, bash
-# Usage: ./setup.sh [DIFY_URL]  (default: http://localhost)
+# Usage: cp .env.example .env  (fill in API keys)  →  ./setup.sh
 
 set -euo pipefail
 
-DIFY_URL="${1:-${DIFY_URL:-http://localhost}}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-COOKIE_JAR=$(mktemp)
-trap 'rm -f "$COOKIE_JAR" 2>/dev/null' EXIT
+ENV_FILE="$SCRIPT_DIR/.env"
+
+if [ ! -f "$ENV_FILE" ]; then
+  echo "ERROR: .env not found. Run: cp .env.example .env  and fill in your API keys."
+  exit 1
+fi
+
+set -a
+# shellcheck source=.env
+source "$ENV_FILE"
+set +a
+
+: "${DIFY_URL:=http://localhost}"
+: "${DIFY_ADMIN_EMAIL:?Set DIFY_ADMIN_EMAIL in .env}"
+: "${DIFY_ADMIN_NAME:=Admin}"
+: "${DIFY_ADMIN_PASSWORD:?Set DIFY_ADMIN_PASSWORD in .env}"
+: "${LLM_PROVIDER:=openai}"
+: "${OPENAI_API_KEY:?Set OPENAI_API_KEY in .env (required for embedding)}"
+
+if [ "$LLM_PROVIDER" = "hkbu" ] && [ -z "${HKBU_API_KEY:-}" ]; then
+  echo "ERROR: LLM_PROVIDER=hkbu but HKBU_API_KEY is empty. Set it in .env."
+  exit 1
+fi
 
 API="$DIFY_URL/console/api"
+COOKIE_JAR=$(mktemp)
+trap 'rm -f "$COOKIE_JAR" 2>/dev/null' EXIT
 
 _py() { python3 -c "import sys,json; $1"; }
 
@@ -25,31 +54,64 @@ _api_post_status() { curl -s -w "\n%{http_code}" -b "$COOKIE_JAR" -X POST "$API$
 echo "================================================"
 echo "  Deep Research Agent (G3) — Automated Setup"
 echo "================================================"
-echo "Dify: $DIFY_URL"
+echo "Dify URL : $DIFY_URL"
+echo "Provider : $LLM_PROVIDER"
+echo "Email    : $DIFY_ADMIN_EMAIL"
 echo ""
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# STEP 1: LOGIN
+# STEP 1: REGISTER + LOGIN
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-read -r -p "Dify email: " EMAIL
-read -r -s -p "Dify password: " PASSWORD
-echo ""
+echo "[1/7] Account setup..."
 
-echo ""
-echo "[1/7] Logging in..."
-B64_PASS=$(python3 -c "import base64; print(base64.b64encode('$PASSWORD'.encode()).decode())")
+SETUP_STATUS=$(curl -s "$API/setup" | _py "print(json.load(sys.stdin).get('step','unknown'))")
+
+if [ "$SETUP_STATUS" = "not_started" ]; then
+  echo "  First-time setup — registering admin account..."
+
+  INIT_RESP=$(curl -s -w "\n%{http_code}" -c "$COOKIE_JAR" -X POST "$API/init" \
+    -H "Content-Type: application/json" \
+    -d '{"password":""}')
+
+  SETUP_PAYLOAD=$(python3 -c "
+import json
+print(json.dumps({
+    'email': '$DIFY_ADMIN_EMAIL',
+    'name': '$DIFY_ADMIN_NAME',
+    'password': '$DIFY_ADMIN_PASSWORD'
+}))")
+
+  REG_RESP=$(curl -s -w "\n%{http_code}" -c "$COOKIE_JAR" -X POST "$API/setup" \
+    -H "Content-Type: application/json" \
+    -d "$SETUP_PAYLOAD")
+  REG_CODE=$(echo "$REG_RESP" | tail -1)
+
+  if [ "$REG_CODE" = "201" ] || [ "$REG_CODE" = "200" ]; then
+    echo "  Admin account created."
+  else
+    echo "  WARNING: Registration returned HTTP $REG_CODE (may already exist)."
+  fi
+fi
+
+echo "  Logging in..."
+B64_PASS=$(python3 -c "import base64; print(base64.b64encode('$DIFY_ADMIN_PASSWORD'.encode()).decode())")
+LOGIN_PAYLOAD=$(python3 -c "
+import json
+print(json.dumps({'email': '$DIFY_ADMIN_EMAIL', 'password': '$B64_PASS'}))")
+
 LOGIN_RESP=$(curl -s -w "\n%{http_code}" -c "$COOKIE_JAR" -X POST "$API/login" \
-  -H "Content-Type: application/json" \
-  -d "$(python3 -c "import json; print(json.dumps({'email':'$EMAIL','password':'$B64_PASS'}))")")
-HTTP_CODE=$(echo "$LOGIN_RESP" | tail -1)
-if [ "$HTTP_CODE" != "200" ]; then
-  echo "  ERROR: Login failed (HTTP $HTTP_CODE). Check email/password."
+  -H "Content-Type: application/json" -d "$LOGIN_PAYLOAD")
+LOGIN_CODE=$(echo "$LOGIN_RESP" | tail -1)
+
+if [ "$LOGIN_CODE" != "200" ]; then
+  echo "  ERROR: Login failed (HTTP $LOGIN_CODE)."
+  echo "  $(echo "$LOGIN_RESP" | sed '$d')"
   exit 1
 fi
-echo "  OK"
+echo "  Logged in."
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# STEP 2: CHOOSE & CONFIGURE MODEL PROVIDER
+# STEP 2: INSTALL PLUGINS + CONFIGURE MODELS
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 has_active_models() {
   _api_get "/workspaces/current/models/model-types/$1" | _py "
@@ -73,19 +135,9 @@ install_plugin() {
   local pkg_id
   pkg_id=$(curl -s "https://marketplace.dify.ai/api/v1/plugins/$plugin_id" \
     -H "Accept: application/json" | _py "print(json.load(sys.stdin)['data']['plugin']['latest_package_identifier'])")
-  local resp
-  resp=$(_api_post "/workspaces/current/plugin/install/marketplace" \
-    "{\"plugin_unique_identifiers\": [\"$pkg_id\"]}")
-  local ok
-  ok=$(echo "$resp" | _py "
-d = json.load(sys.stdin)
-tasks = d.get('all_installed', d.get('task_id', d.get('data', '')))
-print('yes' if tasks else 'no')" 2>/dev/null || echo "no")
-  if [ "$ok" = "yes" ]; then
-    echo "  Installed."
-  else
-    echo "  Plugin may already be installed or is being installed in background."
-  fi
+  _api_post "/workspaces/current/plugin/install/marketplace" \
+    "{\"plugin_unique_identifiers\": [\"$pkg_id\"]}" > /dev/null
+  echo "  Done."
   sleep 3
 }
 
@@ -96,47 +148,25 @@ HAS_LLM=$(has_active_models "llm")
 HAS_EMB=$(has_active_models "text-embedding")
 
 if [ "$HAS_LLM" = "yes" ] && [ "$HAS_EMB" = "yes" ]; then
-  echo "  LLM and embedding models already configured. Skipping."
+  echo "  Models already configured. Skipping."
   PROVIDER_CHOICE="skip"
 else
-  echo ""
-  echo "  Which LLM API do you want to use?"
-  echo "    1) OpenAI  (needs OpenAI API key — covers LLM + embedding)"
-  echo "    2) HKBU GenAI API  (needs HKBU API key + OpenAI key for embedding)"
-  echo "    3) Skip  (already configured manually)"
-  echo ""
-  read -r -p "  Choice [1/2/3]: " PROVIDER_CHOICE
+  PROVIDER_CHOICE="$LLM_PROVIDER"
 
-  case "$PROVIDER_CHOICE" in
-    1)
-      read -r -p "  OpenAI API key (sk-...): " OPENAI_KEY
-      echo "  Installing OpenAI plugin..."
+  case "$LLM_PROVIDER" in
+    openai)
       install_plugin "langgenius/openai"
-
       echo "  Adding OpenAI credentials..."
-      ADD_RESP=$(_api_post_status "/workspaces/current/model-providers/langgenius/openai/openai/credentials" \
-        "$(python3 -c "import json; print(json.dumps({'credentials': {'openai_api_key': '$OPENAI_KEY'}}))")")
-      ADD_CODE=$(echo "$ADD_RESP" | tail -1)
-      if [ "$ADD_CODE" = "201" ] || [ "$ADD_CODE" = "200" ]; then
-        echo "  OpenAI provider configured."
-      else
-        echo "  WARNING: Could not add OpenAI credentials (HTTP $ADD_CODE)."
-        echo "  $(echo "$ADD_RESP" | sed '$d')"
-        echo "  Please add manually: Settings → Model Providers → OpenAI"
-        read -r -p "  Press Enter after adding manually, or Ctrl+C to abort..."
-      fi
+      _api_post_status "/workspaces/current/model-providers/langgenius/openai/openai/credentials" \
+        "$(python3 -c "import json; print(json.dumps({'credentials': {'openai_api_key': '$OPENAI_API_KEY'}}))")" > /dev/null
+      echo "  OpenAI configured (LLM + embedding)."
       ;;
 
-    2)
-      read -r -p "  HKBU API key: " HKBU_KEY
-      read -r -p "  OpenAI API key (for embedding model): " OPENAI_KEY
-
-      echo "  Installing Azure OpenAI plugin (for HKBU LLM)..."
+    hkbu)
       install_plugin "langgenius/azure_openai"
-      echo "  Installing OpenAI plugin (for embedding)..."
       install_plugin "langgenius/openai"
 
-      echo "  Adding HKBU LLM (gpt-4.1)..."
+      echo "  Adding HKBU LLM (gpt-4.1 via Azure OpenAI)..."
       HKBU_CRED=$(python3 -c "
 import json
 print(json.dumps({
@@ -145,40 +175,24 @@ print(json.dumps({
     'credentials': {
         'openai_api_base': 'https://genai.hkbu.edu.hk/api/v0/rest',
         'auth_method': 'api_key',
-        'openai_api_key': '$HKBU_KEY',
+        'openai_api_key': '$HKBU_API_KEY',
         'openai_api_version': '2024-12-01-preview',
         'base_model_name': 'gpt-4.1'
     }
 }))")
-      ADD_RESP=$(_api_post_status \
+      _api_post_status \
         "/workspaces/current/model-providers/langgenius/azure_openai/azure_openai/models/credentials" \
-        "$HKBU_CRED")
-      ADD_CODE=$(echo "$ADD_RESP" | tail -1)
-      if [ "$ADD_CODE" = "201" ] || [ "$ADD_CODE" = "200" ]; then
-        echo "  HKBU LLM configured."
-      else
-        echo "  WARNING: Could not add HKBU LLM (HTTP $ADD_CODE)."
-        echo "  $(echo "$ADD_RESP" | sed '$d')"
-      fi
+        "$HKBU_CRED" > /dev/null
+      echo "  HKBU LLM configured."
 
-      echo "  Adding OpenAI embedding model..."
-      ADD_RESP=$(_api_post_status "/workspaces/current/model-providers/langgenius/openai/openai/credentials" \
-        "$(python3 -c "import json; print(json.dumps({'credentials': {'openai_api_key': '$OPENAI_KEY'}}))")")
-      ADD_CODE=$(echo "$ADD_RESP" | tail -1)
-      if [ "$ADD_CODE" = "201" ] || [ "$ADD_CODE" = "200" ]; then
-        echo "  OpenAI embedding configured."
-      else
-        echo "  WARNING: Could not add OpenAI credentials (HTTP $ADD_CODE)."
-      fi
-      ;;
-
-    3|skip)
-      PROVIDER_CHOICE="skip"
-      echo "  Skipping model provider setup."
+      echo "  Adding OpenAI embedding..."
+      _api_post_status "/workspaces/current/model-providers/langgenius/openai/openai/credentials" \
+        "$(python3 -c "import json; print(json.dumps({'credentials': {'openai_api_key': '$OPENAI_API_KEY'}}))")" > /dev/null
+      echo "  OpenAI embedding configured."
       ;;
 
     *)
-      echo "  Invalid choice. Exiting."
+      echo "  ERROR: LLM_PROVIDER must be 'openai' or 'hkbu'. Got: $LLM_PROVIDER"
       exit 1
       ;;
   esac
@@ -188,11 +202,11 @@ print(json.dumps({
   HAS_LLM=$(has_active_models "llm")
   HAS_EMB=$(has_active_models "text-embedding")
   if [ "$HAS_LLM" != "yes" ]; then
-    echo "  ERROR: No active LLM found. Please configure a model provider and re-run."
+    echo "  ERROR: No active LLM after setup. Check API keys and Dify logs."
     exit 1
   fi
   if [ "$HAS_EMB" != "yes" ]; then
-    echo "  ERROR: No active embedding model found. Please configure and re-run."
+    echo "  ERROR: No active embedding model after setup. Check OPENAI_API_KEY."
     exit 1
   fi
   echo "  Models verified: LLM ✓  Embedding ✓"
@@ -221,7 +235,7 @@ done
 # STEP 4: CREATE KNOWLEDGE BASE
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 echo ""
-echo "[4/7] Creating Knowledge Base + indexing..."
+echo "[4/7] Creating Knowledge Base..."
 FILE_IDS_JSON=$(printf '"%s",' "${FILE_IDS[@]}" | sed 's/,$//')
 
 INIT_PAYLOAD=$(python3 -c "
@@ -282,7 +296,7 @@ done
 echo ""
 
 if [ $WAITED -ge $MAX_WAIT ]; then
-  echo "  WARNING: Indexing not done after ${MAX_WAIT}s. Continuing (it will finish in background)."
+  echo "  WARNING: Indexing not done after ${MAX_WAIT}s. Continuing."
 fi
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -290,7 +304,7 @@ fi
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 echo "[6/7] Preparing workflow..."
 
-if [ "${PROVIDER_CHOICE:-}" = "2" ]; then
+if [ "$LLM_PROVIDER" = "hkbu" ]; then
   YAML_CONTENT=$(python3 -c "
 import json
 with open('$SCRIPT_DIR/dify/research-agent.yml') as f:
@@ -299,7 +313,7 @@ content = content.replace('00000000-0000-0000-0000-000000000000', '$DATASET_ID')
 content = content.replace('provider: langgenius/openai/openai', 'provider: langgenius/azure_openai/azure_openai')
 content = content.replace('name: gpt-4o-mini', 'name: gpt-4.1')
 print(json.dumps(content))")
-  echo "  Patched: KB ID + HKBU model (gpt-4.1 via Azure OpenAI)"
+  echo "  Patched: KB=$DATASET_ID, model=gpt-4.1 (Azure OpenAI)"
 else
   YAML_CONTENT=$(python3 -c "
 import json
@@ -307,7 +321,7 @@ with open('$SCRIPT_DIR/dify/research-agent.yml') as f:
     content = f.read()
 content = content.replace('00000000-0000-0000-0000-000000000000', '$DATASET_ID')
 print(json.dumps(content))")
-  echo "  Patched: KB ID"
+  echo "  Patched: KB=$DATASET_ID"
 fi
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -339,8 +353,9 @@ if [ "$IMPORT_CODE" = "200" ] || [ "$IMPORT_CODE" = "202" ]; then
   echo "  Setup complete!"
   echo "================================================"
   echo ""
+  echo "  Dify login    : $DIFY_ADMIN_EMAIL / (password in .env)"
   echo "  Knowledge Base : $DIFY_URL/datasets/$DATASET_ID/documents"
-  echo "  Workflow        : $DIFY_URL/app/$APP_ID/workflow"
+  echo "  Workflow       : $DIFY_URL/app/$APP_ID/workflow"
   echo ""
   echo "  Next:"
   echo "    1. Open the workflow URL"

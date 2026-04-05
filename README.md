@@ -66,8 +66,8 @@ All constraints are visible and editable directly in the Dify workflow editor.
 
 ### Prerequisites
 
-- Docker & Docker Compose (for Dify)
-- An API key: OpenAI, or HKBU GenAI API + OpenAI (for embedding)
+- Docker & Docker Compose
+- An API key: **OpenAI**, or **HKBU GenAI API** + OpenAI (for embedding)
 
 ### 1. Start Dify
 
@@ -78,20 +78,26 @@ cp .env.example .env
 docker compose up -d
 ```
 
-### 2. Run automated setup
+### 2. Configure
 
 ```bash
-./setup.sh              # uses http://localhost by default
-./setup.sh http://my-dify:8080  # or specify a custom Dify URL
+cp .env.example .env
+# Edit .env — fill in your API keys and choose LLM_PROVIDER (openai or hkbu)
 ```
 
-The script handles **everything** in one command:
-1. Logs into Dify
-2. Installs required plugins from the Dify Marketplace (OpenAI / Azure OpenAI)
-3. Configures model provider — supports **OpenAI** or **HKBU GenAI API**
+### 3. Run setup
+
+```bash
+./setup.sh
+```
+
+**Zero interactive prompts** — everything is read from `.env`. The script:
+1. Registers a Dify admin account (first run only)
+2. Installs model provider plugins from the Dify Marketplace
+3. Configures LLM + embedding credentials (OpenAI or HKBU)
 4. Creates a Knowledge Base and uploads sample documents
 5. Waits for vector indexing to complete
-6. Patches and imports the workflow (correct KB ID + model provider)
+6. Patches and imports the workflow (correct KB ID + model references)
 
 <details>
 <summary>Manual setup (if you prefer)</summary>
@@ -100,7 +106,7 @@ See [`dify/SETUP_GUIDE.md`](dify/SETUP_GUIDE.md) for step-by-step manual instruc
 
 </details>
 
-### 3. Test
+### 4. Test
 
 Open the workflow URL printed by the setup script → **Debug & Preview** → enter a query:
 
@@ -112,7 +118,8 @@ Open the workflow URL printed by the setup script → **Debug & Preview** → en
 binox-interview/
 ├── README.md                          # This file
 ├── evaluation.md                      # Architecture trade-off analysis
-├── setup.sh                           # Automated setup script
+├── setup.sh                           # Automated setup (reads from .env)
+├── .env.example                       # Configuration template
 ├── .gitignore
 ├── dify/
 │   ├── research-agent.yml             # Dify workflow DSL (import into Dify)
