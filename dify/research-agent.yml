@@ -1,0 +1,231 @@
+app:
+  description: >-
+    Deep Research Agent that answers complex multi-part queries under
+    self-defined memory/token constraints using a summarization cascade.
+  icon: "\U0001F50D"
+  icon_background: "#2563EB"
+  mode: workflow
+  name: Deep Research Agent (G3)
+
+kind: app
+version: 0.1.5
+
+workflow:
+  conversation_variables: []
+
+  environment_variables:
+    - name: MEMORY_SERVICE_URL
+      value_type: string
+      value: "http://host.docker.internal:8100"
+    - name: SESSION_ID
+      value_type: string
+      value: "default-session"
+
+  graph:
+    edges:
+      - source: start
+        target: reset_budget
+      - source: reset_budget
+        target: decompose
+      - source: decompose
+        target: iterator
+      - source: iterator
+        target: research_subquery
+      - source: research_subquery
+        target: check_budget
+      - source: check_budget
+        target: iterator
+        sourceHandle: continue
+      - source: iterator
+        target: synthesize
+        sourceHandle: done
+      - source: synthesize
+        target: format_output
+      - source: format_output
+        target: end
+
+    nodes:
+      # ── START ──────────────────────────────────────────────
+      - id: start
+        type: start
+        data:
+          title: Start
+          variables:
+            - label: User Query
+              variable: query
+              type: text-input
+              required: true
+              max_length: 2000
+
+      # ── RESET SESSION BUDGET ──────────────────────────────
+      - id: reset_budget
+        type: http-request
+        data:
+          title: Reset Session Budget
+          desc: Clear token counters for a fresh research session
+          method: POST
+          url: "{{#env.MEMORY_SERVICE_URL#}}/memory/reset"
+          headers: []
+          body:
+            type: none
+          timeout:
+            max_connect_timeout: 10
+            max_read_timeout: 30
+          authorization:
+            type: no-auth
+
+      # ── DECOMPOSE QUERY ───────────────────────────────────
+      - id: decompose
+        type: http-request
+        data:
+          title: Decompose Query
+          desc: Break the user's complex question into sub-questions via the memory service
+          method: POST
+          url: "{{#env.MEMORY_SERVICE_URL#}}/decompose"
+          headers:
+            - key: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "query": "{{#start.query#}}"
+              }
+          timeout:
+            max_connect_timeout: 10
+            max_read_timeout: 60
+          authorization:
+            type: no-auth
+
+      # ── ITERATOR (loop over sub-questions) ────────────────
+      - id: iterator
+        type: iteration
+        data:
+          title: Research Each Sub-Question
+          desc: Iterate over decomposed sub-questions
+          iterator_selector:
+            - decompose
+            - body
+            - subquestions
+          output_selector:
+            - research_subquery
+            - body
+
+      # ── RESEARCH SINGLE SUB-QUERY ─────────────────────────
+      - id: research_subquery
+        type: http-request
+        data:
+          title: Research Sub-Query
+          desc: >-
+            Send each sub-question to the memory service which researches it,
+            summarises the result within the token budget, and stores it.
+          method: POST
+          url: "{{#env.MEMORY_SERVICE_URL#}}/research"
+          headers:
+            - key: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "subquery": "{{#iterator.item#}}",
+                "session_id": "{{#env.SESSION_ID#}}"
+              }
+          timeout:
+            max_connect_timeout: 10
+            max_read_timeout: 60
+          authorization:
+            type: no-auth
+
+      # ── CHECK BUDGET ──────────────────────────────────────
+      - id: check_budget
+        type: http-request
+        data:
+          title: Check Token Budget
+          desc: Query remaining token budget before next iteration
+          method: GET
+          url: "{{#env.MEMORY_SERVICE_URL#}}/memory/budget"
+          headers: []
+          body:
+            type: none
+          timeout:
+            max_connect_timeout: 10
+            max_read_timeout: 10
+          authorization:
+            type: no-auth
+
+      # ── SYNTHESIZE FINAL ANSWER ───────────────────────────
+      - id: synthesize
+        type: http-request
+        data:
+          title: Synthesize Answer
+          desc: >-
+            Retrieve all relevant stored summaries and synthesise
+            a comprehensive, cited final answer.
+          method: POST
+          url: "{{#env.MEMORY_SERVICE_URL#}}/synthesize"
+          headers:
+            - key: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "query": "{{#start.query#}}",
+                "top_k": 10,
+                "session_id": "{{#env.SESSION_ID#}}"
+              }
+          timeout:
+            max_connect_timeout: 10
+            max_read_timeout: 120
+          authorization:
+            type: no-auth
+
+      # ── FORMAT OUTPUT ─────────────────────────────────────
+      - id: format_output
+        type: llm
+        data:
+          title: Format Output
+          desc: Clean up the synthesised answer and append budget stats
+          model:
+            provider: openai_api_compatible
+            name: gpt-4.1
+            mode: chat
+            completion_params:
+              temperature: 0.2
+              max_tokens: 1000
+          prompts:
+            - role: system
+              text: >-
+                You are a formatting assistant. Take the raw JSON response and
+                present it as a clean, well-structured research report in
+                Markdown. Include the sources used and the token budget summary
+                at the bottom. Do NOT add information that is not in the input.
+            - role: user
+              text: >-
+                Raw response:
+                {{#synthesize.body#}}
+
+                Budget info:
+                Sources used: {{#synthesize.body.sources_used#}}
+                Context tokens: {{#synthesize.body.context_tokens#}}
+                Total tokens used: {{#synthesize.body.budget.tokens_used#}}
+                Tokens remaining: {{#synthesize.body.budget.tokens_remaining#}}
+          memory:
+            role_prefix:
+              assistant: ""
+              user: ""
+            window:
+              enabled: false
+              size: 0
+
+      # ── END ────────────────────────────────────────────────
+      - id: end
+        type: end
+        data:
+          title: End
+          outputs:
+            - variable: answer
+              value_selector:
+                - format_output
+                - text
