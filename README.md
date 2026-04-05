@@ -67,7 +67,7 @@ All constraints are visible and editable directly in the Dify workflow editor.
 ### Prerequisites
 
 - Docker & Docker Compose (for Dify)
-- An OpenAI API key (or any OpenAI-compatible API key)
+- An API key: OpenAI, or HKBU GenAI API + OpenAI (for embedding)
 
 ### 1. Start Dify
 
@@ -87,10 +87,11 @@ docker compose up -d
 
 The script handles **everything** in one command:
 1. Logs into Dify
-2. Configures OpenAI model provider (LLM + embedding) if not already set up
-3. Creates a Knowledge Base and uploads sample documents
-4. Waits for vector indexing to complete
-5. Imports the workflow with the correct KB reference
+2. Installs required plugins from the Dify Marketplace (OpenAI / Azure OpenAI)
+3. Configures model provider — supports **OpenAI** or **HKBU GenAI API**
+4. Creates a Knowledge Base and uploads sample documents
+5. Waits for vector indexing to complete
+6. Patches and imports the workflow (correct KB ID + model provider)
 
 <details>
 <summary>Manual setup (if you prefer)</summary>
