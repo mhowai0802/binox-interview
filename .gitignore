@@ -16,3 +16,19 @@ Thumbs.db
 
 # Dify local data
 dify/docker/volumes/
+
+# Test recordings (raw files too large for git)
+examples/recordings/*.webm
+examples/recordings/*.mov
+examples/recordings/*.png
+# Keep demo videos for README
+!examples/recordings/test_01.mp4
+!examples/recordings/test_04.mp4
+!examples/recordings/test_10.mp4
+!examples/recordings/test_01.gif
+!examples/recordings/test_04.gif
+!examples/recordings/test_10.gif
+
+# Test automation scripts (not part of deliverable)
+run_tests.py
+debug_ui.py
