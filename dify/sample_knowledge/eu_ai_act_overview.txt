@@ -1,0 +1,29 @@
+EU AI Act: Key Provisions and Risk Classification (2024)
+
+The European Union's Artificial Intelligence Act (EU AI Act) was formally adopted on March 13, 2024, and entered into force on August 1, 2024. It is the world's first comprehensive legal framework for artificial intelligence.
+
+Risk-Based Classification System:
+The Act establishes four tiers of risk for AI systems:
+
+1. Unacceptable Risk (Banned): AI systems that pose a clear threat to safety, livelihoods, and rights. This includes social scoring by governments, real-time remote biometric identification in public spaces (with narrow exceptions), and AI that exploits vulnerabilities of specific groups.
+
+2. High Risk: AI systems used in critical areas including biometric identification, critical infrastructure management, education and vocational training, employment and worker management, access to essential services (credit scoring, insurance), law enforcement, migration and border control, and administration of justice. These systems must undergo conformity assessments, maintain risk management systems, ensure data governance, provide technical documentation, enable human oversight, and meet accuracy, robustness, and cybersecurity requirements.
+
+3. Limited Risk: AI systems with specific transparency obligations, such as chatbots (which must disclose they are AI), emotion recognition systems, and deepfakes (which must be labeled as artificially generated).
+
+4. Minimal Risk: All other AI systems, such as spam filters and AI-enabled video games. No specific regulatory requirements beyond existing legislation.
+
+Governance and Enforcement:
+- The European AI Office, established within the European Commission, oversees implementation.
+- Each EU member state must designate a national competent authority.
+- Penalties for non-compliance: up to EUR 35 million or 7% of global annual turnover (whichever is higher) for prohibited AI practices; up to EUR 15 million or 3% for other violations.
+- The Act includes provisions for regulatory sandboxes to help SMEs and startups test AI innovations in a controlled environment.
+
+Timeline:
+- August 2024: Entry into force
+- February 2025: Ban on prohibited AI practices takes effect
+- August 2025: Rules for general-purpose AI models apply
+- August 2026: Full applicability of high-risk AI system requirements
+
+Impact on Innovation:
+The EU AI Act is expected to create significant compliance costs for companies developing or deploying high-risk AI systems. Industry estimates suggest compliance costs of EUR 200,000-400,000 per high-risk AI system. However, the regulatory sandboxes and the risk-based approach aim to balance innovation with safety.

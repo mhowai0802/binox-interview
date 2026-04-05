@@ -1,0 +1,39 @@
+United States AI Regulatory Landscape (2024-2025)
+
+Unlike the EU's comprehensive approach, the United States regulates AI through a patchwork of executive orders, sector-specific regulations, and state-level legislation. There is no single federal AI law comparable to the EU AI Act.
+
+Federal Level:
+
+Executive Order 14110 (October 2023): "Safe, Secure, and Trustworthy Development and Use of Artificial Intelligence"
+- Required developers of powerful AI systems to share safety test results with the US government
+- Directed NIST to develop standards for red-team testing
+- Addressed AI-generated content watermarking
+- Note: This EO was rescinded by the subsequent administration in January 2025, creating regulatory uncertainty
+
+NIST AI Risk Management Framework (AI RMF 1.0):
+- Voluntary framework published January 2023
+- Provides guidelines for managing AI risks across the lifecycle
+- Organized around four functions: Govern, Map, Measure, Manage
+- Widely adopted by industry but not legally binding
+
+Sector-Specific Regulation:
+- FTC: Enforces against unfair or deceptive AI practices under existing consumer protection authority. Has taken action against companies for AI-related deception and bias.
+- FDA: Regulates AI/ML-based Software as a Medical Device (SaMD). Has approved over 700 AI-enabled medical devices.
+- SEC: Proposed rules on AI use by broker-dealers and investment advisers to address conflicts of interest.
+- DOT/NHTSA: Guidelines for autonomous vehicle testing and deployment.
+- EEOC: Guidance on AI in employment decisions under existing civil rights laws.
+
+State-Level Activity:
+- Colorado AI Act (2024): First comprehensive state AI law, effective February 2026. Requires developers and deployers of high-risk AI systems to use reasonable care to avoid algorithmic discrimination.
+- California: Multiple AI-related bills including SB 1047 (vetoed) on frontier model safety, and AB 2013 on AI training data transparency.
+- Illinois: AI Video Interview Act requiring disclosure when AI analyzes video interviews.
+- New York City: Local Law 144 requiring bias audits of AI employment tools.
+- Over 40 states have introduced AI-related legislation as of 2024.
+
+Key Differences from EU Approach:
+- No single comprehensive federal framework
+- Emphasis on voluntary guidelines and industry self-regulation
+- Sector-specific rather than risk-classification-based
+- Generally more innovation-friendly but less predictable
+- Enforcement through existing regulatory authority rather than new AI-specific mechanisms
+- State-level fragmentation creates compliance complexity

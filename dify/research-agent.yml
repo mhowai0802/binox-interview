@@ -3,6 +3,7 @@ app:
     Deep Research Agent (G3) — answers complex multi-part queries under
     self-defined memory/token constraints. Decomposes questions into
     sub-questions, researches each with a per-subquery token budget,
+    retrieves relevant context from a vector Knowledge Base,
     tracks cumulative usage, then synthesises a final cited answer
     with a budget report. Entirely self-contained in Dify.
   icon: "\U0001F50D"
@@ -21,7 +22,7 @@ workflow:
       enabled: false
     opening_statement: ''
     retriever_resource:
-      enabled: false
+      enabled: true
     sensitive_word_avoidance:
       enabled: false
     speech_to_text:
@@ -86,9 +87,21 @@ workflow:
           isInIteration: false
           isInLoop: false
           sourceType: iteration
-          targetType: code
-        id: iterator-to-aggregate
+          targetType: knowledge-retrieval
+        id: iterator-to-kb
         source: iterator
+        sourceHandle: source
+        target: kb_retrieval
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data:
+          isInIteration: false
+          isInLoop: false
+          sourceType: knowledge-retrieval
+          targetType: code
+        id: kb-to-aggregate
+        source: kb_retrieval
         sourceHandle: source
         target: aggregate
         targetHandle: target
@@ -369,18 +382,61 @@ workflow:
         width: 244
         zIndex: 1002
 
+      # ── KNOWLEDGE BASE RETRIEVAL ──────────────────────
+      - data:
+          desc: >-
+            Retrieve relevant context from the vector Knowledge Base
+            using semantic similarity search on the original query.
+            Configure your KB ID after import — see SETUP_GUIDE.md.
+          query_variable_selector:
+            - start
+            - query
+          dataset_ids:
+            - "00000000-0000-0000-0000-000000000000"
+          retrieval_mode: multiple
+          multiple_retrieval_config:
+            top_k: 3
+            score_threshold: 0.5
+            reranking_mode: reranking_model
+            reranking_enable: false
+          metadata_filtering_mode: disabled
+          selected: false
+          title: Knowledge Base Retrieval
+          type: knowledge-retrieval
+          vision:
+            enabled: false
+        height: 90
+        id: kb_retrieval
+        position:
+          x: 1390
+          y: 282
+        positionAbsolute:
+          x: 1390
+          y: 282
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 244
+
       # ── CODE: AGGREGATE + BUDGET ───────────────────────
       - data:
           code: |
-            def main(results: list, query: str) -> dict:
+            def main(results: list, kb_results: list, query: str) -> dict:
                 MAX_PER_SUBQUERY = 2000
                 MAX_PER_SESSION = 10000
 
                 context_parts = []
-                total_chars = 0
                 for i, r in enumerate(results):
                     context_parts.append(f"[Source {i + 1}]\n{r}")
-                    total_chars += len(r)
+
+                kb_count = 0
+                for doc in kb_results:
+                    content = doc.get("content", "") if isinstance(doc, dict) else str(doc)
+                    title = doc.get("title", "") if isinstance(doc, dict) else ""
+                    if content:
+                        kb_count += 1
+                        label = title if title else f"KB Doc {kb_count}"
+                        context_parts.append(f"[KB: {label}]\n{content}")
 
                 context = "\n\n".join(context_parts)
                 approx_tokens = len(context) // 4
@@ -398,6 +454,7 @@ workflow:
                     f"Tokens used: ~{approx_tokens:,} / {MAX_PER_SESSION:,}\n"
                     f"Tokens remaining: ~{remaining:,}\n"
                     f"Sub-queries completed: {len(results)} / 5\n"
+                    f"KB documents retrieved: {kb_count}\n"
                     f"Per-subquery limit: {MAX_PER_SUBQUERY:,} tokens\n"
                     f"Truncated: {'Yes' if truncated else 'No'}\n"
                     f"Budget status: {'WITHIN BUDGET' if remaining > 0 else 'BUDGET EXHAUSTED'}"
@@ -410,7 +467,7 @@ workflow:
                     "subqueries_done": len(results),
                 }
           code_language: python3
-          desc: 'Combine research results, count tokens, enforce session budget'
+          desc: 'Combine research results + KB retrieval, count tokens, enforce session budget'
           outputs:
             context:
               children: null
@@ -433,16 +490,20 @@ workflow:
                 - output
               variable: results
             - value_selector:
+                - kb_retrieval
+                - result
+              variable: kb_results
+            - value_selector:
                 - start
                 - query
               variable: query
         height: 54
         id: aggregate
         position:
-          x: 1390
+          x: 1694
           y: 282
         positionAbsolute:
-          x: 1390
+          x: 1694
           y: 282
         sourcePosition: right
         targetPosition: left
@@ -468,9 +529,10 @@ workflow:
               text: >-
                 You are a senior research analyst. Using ONLY the provided
                 research context below, write a comprehensive, well-structured
-                answer to the user's question. Cite your sources as [Source N].
-                If the context is insufficient for any part, clearly state what
-                information is missing.
+                answer to the user's question. Cite your sources as [Source N]
+                for LLM-researched content and [KB: title] for knowledge base
+                content. If the context is insufficient for any part, clearly
+                state what information is missing.
 
 
                 --- RESEARCH CONTEXT ---
@@ -488,10 +550,10 @@ workflow:
         height: 90
         id: synthesize_llm
         position:
-          x: 1694
+          x: 1998
           y: 282
         positionAbsolute:
-          x: 1694
+          x: 1998
           y: 282
         sourcePosition: right
         targetPosition: left
@@ -515,9 +577,9 @@ workflow:
                     report += f"| {key.strip()} | {val.strip()} |\n"
 
                 report += (
-                    "\n*Token counts are approximated (chars / 4) since the Dify "
-                    "sandbox does not include tiktoken. See evaluation.md for "
-                    "trade-off analysis.*\n"
+                    "\n*Token counts are approximated (chars / 4). "
+                    "KB retrieval uses vector similarity search with "
+                    "cosine distance. See evaluation.md for trade-off analysis.*\n"
                 )
                 return {"report": report}
           code_language: python3
@@ -545,10 +607,10 @@ workflow:
         height: 54
         id: format_report
         position:
-          x: 1998
+          x: 2302
           y: 282
         positionAbsolute:
-          x: 1998
+          x: 2302
           y: 282
         sourcePosition: right
         targetPosition: left
@@ -570,10 +632,10 @@ workflow:
         height: 90
         id: end_node
         position:
-          x: 2302
+          x: 2606
           y: 282
         positionAbsolute:
-          x: 2302
+          x: 2606
           y: 282
         sourcePosition: right
         targetPosition: left

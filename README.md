@@ -11,7 +11,8 @@ flowchart TD
     ParseNode --> IteratorNode["Iteration: For each sub-question"]
     IteratorNode --> ResearchNode["LLM: Research Sub-Question<br/>(max_tokens=2000)"]
     ResearchNode --> IteratorNode
-    IteratorNode -->|done| AggregateNode["Code: Aggregate + Budget Check"]
+    IteratorNode -->|done| KBNode["Knowledge Base Retrieval<br/>(top 3 by similarity)"]
+    KBNode --> AggregateNode["Code: Aggregate + Budget Check"]
     AggregateNode --> SynthesizeNode["LLM: Synthesize Final Answer"]
     SynthesizeNode --> FormatNode["Code: Format Report + Budget"]
     FormatNode --> EndNode["End: Markdown Report"]
@@ -22,9 +23,21 @@ flowchart TD
 1. **Decompose** — an LLM breaks a complex query into up to 5 independent sub-questions (returned as a JSON array).
 2. **Parse** — a Code node extracts the sub-question array and enforces the max-5 limit.
 3. **Iterate + Research** — each sub-question is answered by an LLM with `max_tokens=2000`, enforcing the per-subquery budget at the model level.
-4. **Aggregate + Budget** — a Code node combines all research results into a `[Source N]` context block, counts approximate tokens (`chars / 4`), and truncates if the 10,000-token session budget is exceeded.
-5. **Synthesize** — an LLM produces a comprehensive, cited final answer from the aggregated research context.
-6. **Format** — a Code node merges the answer with a constraint/budget summary table.
+4. **Knowledge Base Retrieval** — the original query is searched against a vector Knowledge Base (Dify's built-in KB with embedding + cosine similarity). Top 3 relevant chunks are retrieved.
+5. **Aggregate + Budget** — a Code node combines all research results *and* KB retrieval results into a unified `[Source N]` / `[KB: title]` context block, counts approximate tokens (`chars / 4`), and truncates if the 10,000-token session budget is exceeded.
+6. **Synthesize** — an LLM produces a comprehensive, cited final answer from the aggregated context.
+7. **Format** — a Code node merges the answer with a constraint/budget summary table.
+
+### Memory Architecture: Hybrid (LLM Research + Vector RAG)
+
+The agent uses a **two-source** memory strategy:
+
+| Source | Type | How It Works |
+|---|---|---|
+| LLM Research (per sub-question) | Parametric knowledge | Each sub-question answered by an LLM within a 2,000-token budget |
+| Knowledge Base Retrieval | Vector RAG | Original query searched against an embedded document store; top-K chunks retrieved by cosine similarity |
+
+Both sources are combined into a single context block and subject to the same 10,000-token session budget. This hybrid approach provides both breadth (LLM parametric knowledge) and depth (domain-specific documents from the KB).
 
 ### Self-Defined Constraints
 
@@ -33,6 +46,7 @@ flowchart TD
 | Max tokens per sub-query | `max_tokens` parameter on the Research LLM node | 2,000 |
 | Max tokens per session | Code node truncates aggregated context if over budget | 10,000 |
 | Max sub-questions | Decompose prompt instruction + Code node `[:5]` slice | 5 |
+| KB retrieval chunks | `top_k` parameter on Knowledge Base Retrieval node | 3 |
 
 All constraints are visible and editable directly in the Dify workflow editor.
 
@@ -42,6 +56,7 @@ All constraints are visible and editable directly in the Dify workflow editor.
 |---|---|
 | Orchestration | [Dify](https://dify.ai) (self-hosted, workflow mode) |
 | LLM | Any OpenAI-compatible model (HKBU GenAI API / OpenAI / etc.) |
+| Vector Retrieval | Dify Knowledge Base (embedding + cosine similarity) |
 | Query Decomposition | LLM node with JSON output prompt |
 | Token Counting | Approximation in Code node (`len(text) // 4`) |
 | Budget Enforcement | Code node with truncation logic |
@@ -68,11 +83,22 @@ docker compose up -d
 In Dify Settings, add your LLM (OpenAI, HKBU GenAI API, etc.).
 See [`dify/SETUP_GUIDE.md`](dify/SETUP_GUIDE.md) for detailed steps.
 
-### 3. Import the workflow
+### 3. Create a Knowledge Base
+
+1. Go to **Knowledge** → **Create Knowledge** → name it `AI Regulation Research`
+2. Upload the 3 sample documents from [`dify/sample_knowledge/`](dify/sample_knowledge/)
+3. Wait for indexing to complete
+
+### 4. Import the workflow
 
 Go to **Studio** → **Create from DSL** → upload [`dify/research-agent.yml`](dify/research-agent.yml).
 
-### 4. Test
+### 5. Configure the KB Retrieval node
+
+Open the **Knowledge Base Retrieval** node in the workflow editor and select your Knowledge Base.
+See [`dify/SETUP_GUIDE.md`](dify/SETUP_GUIDE.md) Step 5 for detailed instructions.
+
+### 6. Test
 
 Open the workflow → **Debug & Preview** → enter a query:
 
@@ -82,14 +108,18 @@ Open the workflow → **Debug & Preview** → enter a query:
 
 ```
 binox-interview/
-├── README.md                  # This file
-├── evaluation.md              # Architecture trade-off analysis
+├── README.md                          # This file
+├── evaluation.md                      # Architecture trade-off analysis
 ├── .gitignore
 ├── dify/
-│   ├── research-agent.yml     # Dify workflow DSL (import into Dify)
-│   └── SETUP_GUIDE.md         # Step-by-step Dify configuration
+│   ├── research-agent.yml             # Dify workflow DSL (import into Dify)
+│   ├── SETUP_GUIDE.md                 # Step-by-step Dify configuration
+│   └── sample_knowledge/              # Documents for the Knowledge Base
+│       ├── eu_ai_act_overview.txt     # EU AI Act provisions and risk tiers
+│       ├── us_ai_policy.txt           # US AI regulatory landscape
+│       └── ai_startup_impact.txt      # Impact on tech startups
 └── examples/
-    └── demo_output.md         # Sample workflow output
+    └── demo_output.md                 # Sample workflow output
 ```
 
 ## Workflow Nodes
@@ -100,8 +130,9 @@ binox-interview/
 | Decompose Query | LLM | Break query into up to 5 sub-questions |
 | Parse Sub-Questions | Code | Extract JSON array, enforce max-5 |
 | Research Each Sub-Question | Iteration + LLM | Answer each sub-question (`max_tokens=2000`) |
-| Aggregate + Budget | Code | Combine results, count tokens, truncate if over 10K budget |
-| Synthesize Answer | LLM | Produce final cited answer from research context |
+| Knowledge Base Retrieval | knowledge-retrieval | Vector similarity search (top 3 chunks) |
+| Aggregate + Budget | Code | Combine research + KB results, count tokens, truncate if over 10K |
+| Synthesize Answer | LLM | Produce final cited answer from combined context |
 | Format Report | Code | Merge answer with budget summary table |
 | End | end | Output Markdown report |
 
@@ -115,29 +146,31 @@ binox-interview/
 **Expected flow:**
 1. Decomposes into ~4 sub-questions (EU AI Act provisions, US approach, enforcement differences, startup impact).
 2. Each sub-question researched by LLM with 2,000-token limit.
-3. Results aggregated and checked against 10,000-token session budget.
-4. Final synthesis with `[Source N]` citations.
-5. Markdown report with budget summary table showing tokens used vs. limits.
+3. Knowledge Base searched for relevant document chunks (EU AI Act overview, US policy, startup impact).
+4. Research results + KB chunks aggregated and checked against 10,000-token session budget.
+5. Final synthesis with `[Source N]` and `[KB: title]` citations.
+6. Markdown report with budget summary table showing tokens used vs. limits.
 
 See [`examples/demo_output.md`](examples/demo_output.md) for sample output.
 
 ## Self-Assessment
 
 ### Strengths
-- **Zero-setup prototype**: import one YAML file into Dify and it works — no external services, no Docker builds, no API servers.
+- **Vector RAG + LLM research**: combines parametric knowledge with domain-specific document retrieval, satisfying the "retrieval of relevant context" criterion.
+- **Zero-setup prototype**: import one YAML file into Dify, create a KB, and it works — no external services, no Docker builds, no API servers.
 - **Visible constraint enforcement**: all budget parameters are editable directly in the Dify workflow editor.
 - **Clear decomposition**: the workflow structure mirrors the conceptual architecture exactly.
-- **Reproducible**: the entire agent is captured in a single version-controlled YAML file.
-- **Appropriate tool selection**: Dify was recommended in the brief; this implementation uses it fully.
+- **Reproducible**: the entire agent is captured in a single version-controlled YAML file with sample documents.
+- **Appropriate tool selection**: Dify was recommended in the brief; this implementation uses it fully, including its native Knowledge Base for vector retrieval.
 
 ### Limitations
 - Token counting uses character-based approximation (`chars / 4`) since the Dify sandbox lacks `tiktoken`. See `evaluation.md` for analysis.
 - No live web search — research uses LLM parametric knowledge. A production version would add a web search tool node.
-- No vector storage / RAG — research results are passed through the workflow graph, not stored in a persistent vector DB. Sufficient for the prototype but not for cross-session memory.
+- KB requires one-time manual setup (create KB, upload documents, link to workflow). This is inherent to Dify's design.
 - Budget enforcement is post-hoc (after iteration), not per-step (mid-iteration early stopping). Dify iteration nodes don't natively support conditional break.
 
 ### Future Improvements
 - Add a Dify Tool node for web search (Tavily, SearXNG) to ground answers in real-time data.
-- Connect a Dify Knowledge Base for persistent cross-session memory.
 - Use Dify's Agent mode for dynamic tool selection (search vs. knowledge base vs. LLM).
 - Implement per-step budget enforcement using Dify conversation variables + variable assigner for early stopping.
+- Add more documents to the KB for broader domain coverage.
