@@ -34,10 +34,15 @@ set +a
 : "${DIFY_ADMIN_NAME:=Admin}"
 : "${DIFY_ADMIN_PASSWORD:?Set DIFY_ADMIN_PASSWORD in .env}"
 : "${LLM_PROVIDER:=openai}"
-: "${OPENAI_API_KEY:?Set OPENAI_API_KEY in .env (required for embedding)}"
+: "${HKBU_LLM_MODEL:=gpt-4.1}"
+: "${HKBU_EMBEDDING_MODEL:=text-embedding-3-small}"
 
 if [ "$LLM_PROVIDER" = "hkbu" ] && [ -z "${HKBU_API_KEY:-}" ]; then
   echo "ERROR: LLM_PROVIDER=hkbu but HKBU_API_KEY is empty. Set it in .env."
+  exit 1
+fi
+if [ "$LLM_PROVIDER" = "openai" ] && [ -z "${OPENAI_API_KEY:-}" ]; then
+  echo "ERROR: LLM_PROVIDER=openai but OPENAI_API_KEY is empty. Set it in .env."
   exit 1
 fi
 
@@ -164,31 +169,44 @@ else
 
     hkbu)
       install_plugin "langgenius/azure_openai"
-      install_plugin "langgenius/openai"
 
-      echo "  Adding HKBU LLM (gpt-4.1 via Azure OpenAI)..."
-      HKBU_CRED=$(python3 -c "
+      echo "  Adding HKBU LLM ($HKBU_LLM_MODEL)..."
+      HKBU_LLM_CRED=$(python3 -c "
 import json
 print(json.dumps({
-    'model': 'gpt-4.1',
+    'model': '$HKBU_LLM_MODEL',
     'model_type': 'llm',
     'credentials': {
         'openai_api_base': 'https://genai.hkbu.edu.hk/api/v0/rest',
         'auth_method': 'api_key',
         'openai_api_key': '$HKBU_API_KEY',
         'openai_api_version': '2024-12-01-preview',
-        'base_model_name': 'gpt-4.1'
+        'base_model_name': '$HKBU_LLM_MODEL'
     }
 }))")
       _api_post_status \
         "/workspaces/current/model-providers/langgenius/azure_openai/azure_openai/models/credentials" \
-        "$HKBU_CRED" > /dev/null
+        "$HKBU_LLM_CRED" > /dev/null
       echo "  HKBU LLM configured."
 
-      echo "  Adding OpenAI embedding..."
-      _api_post_status "/workspaces/current/model-providers/langgenius/openai/openai/credentials" \
-        "$(python3 -c "import json; print(json.dumps({'credentials': {'openai_api_key': '$OPENAI_API_KEY'}}))")" > /dev/null
-      echo "  OpenAI embedding configured."
+      echo "  Adding HKBU embedding ($HKBU_EMBEDDING_MODEL)..."
+      HKBU_EMB_CRED=$(python3 -c "
+import json
+print(json.dumps({
+    'model': '$HKBU_EMBEDDING_MODEL',
+    'model_type': 'text-embedding',
+    'credentials': {
+        'openai_api_base': 'https://genai.hkbu.edu.hk/api/v0/rest',
+        'auth_method': 'api_key',
+        'openai_api_key': '$HKBU_API_KEY',
+        'openai_api_version': '2024-12-01-preview',
+        'base_model_name': '$HKBU_EMBEDDING_MODEL'
+    }
+}))")
+      _api_post_status \
+        "/workspaces/current/model-providers/langgenius/azure_openai/azure_openai/models/credentials" \
+        "$HKBU_EMB_CRED" > /dev/null
+      echo "  HKBU embedding configured."
       ;;
 
     *)
@@ -311,9 +329,9 @@ with open('$SCRIPT_DIR/dify/research-agent.yml') as f:
     content = f.read()
 content = content.replace('00000000-0000-0000-0000-000000000000', '$DATASET_ID')
 content = content.replace('provider: langgenius/openai/openai', 'provider: langgenius/azure_openai/azure_openai')
-content = content.replace('name: gpt-4o-mini', 'name: gpt-4.1')
+content = content.replace('name: gpt-4o-mini', 'name: $HKBU_LLM_MODEL')
 print(json.dumps(content))")
-  echo "  Patched: KB=$DATASET_ID, model=gpt-4.1 (Azure OpenAI)"
+  echo "  Patched: KB=$DATASET_ID, model=$HKBU_LLM_MODEL (Azure OpenAI)"
 else
   YAML_CONTENT=$(python3 -c "
 import json

@@ -67,7 +67,7 @@ All constraints are visible and editable directly in the Dify workflow editor.
 ### Prerequisites
 
 - Docker & Docker Compose
-- An API key: **OpenAI**, or **HKBU GenAI API** + OpenAI (for embedding)
+- An API key: **OpenAI** or **HKBU GenAI API** (either one is sufficient)
 
 ### 1. Start Dify
 
@@ -94,7 +94,7 @@ cp .env.example .env
 **Zero interactive prompts** — everything is read from `.env`. The script:
 1. Registers a Dify admin account (first run only)
 2. Installs model provider plugins from the Dify Marketplace
-3. Configures LLM + embedding credentials (OpenAI or HKBU)
+3. Configures LLM + embedding credentials (OpenAI or HKBU — single key covers both)
 4. Creates a Knowledge Base and uploads sample documents
 5. Waits for vector indexing to complete
 6. Patches and imports the workflow (correct KB ID + model references)
